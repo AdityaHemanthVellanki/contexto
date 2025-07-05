@@ -1,0 +1,28 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Pipelines: only the owner can read or write their own pipeline docs
+    match /pipelines/{pipelineId} {
+      allow create: if request.auth != null && request.auth.uid == request.resource.data.userId;
+      allow update, delete: if request.auth != null
+                            && request.auth.uid == resource.data.userId;
+      allow read: if request.auth != null
+                  && request.auth.uid == resource.data.userId;
+    }
+
+    // Usage metrics: any authenticated user can write their own usage logs,
+    // but nobody can read them client-side.
+    match /usage_metrics/{entryId} {
+      allow create: if request.auth != null 
+                    && request.auth.uid == request.resource.data.userId;
+      allow read: if false;
+      allow update, delete: if false;
+    }
+
+    // Serve documents or settings you need publicly (e.g. your app’s config)
+    // match /public/{doc} {
+    //   allow read: if true;
+    // }
+  }
+}

@@ -5,9 +5,12 @@ import Link from 'next/link';
 import { useTheme } from '@/context/ThemeContext';
 import { FiSun, FiMoon, FiMenu, FiX } from 'react-icons/fi';
 import { motion, Variants, Variant, TargetAndTransition, Transition } from 'framer-motion';
+import AuthButton from '@/components/auth/AuthButton';
+import { useAuth } from '@/context/AuthContext';
 
 const Header = () => {
   const { theme, toggleTheme } = useTheme();
+  const { user } = useAuth();
   const [isScrolled, setIsScrolled] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
@@ -104,19 +107,27 @@ const Header = () => {
             animate={{ opacity: 1 }}
             transition={{ duration: 0.5, delay: 0.2 }}
           >
-            {['features', 'how-it-works', 'pricing', 'docs', 'signin'].map((item, i) => (
+            {['features', 'how-it-works', 'pricing', 'docs'].map((item, i) => (
               <motion.div
                 key={item}
                 initial={{ opacity: 0, y: -10 }}
                 animate={createNavItemVariants(i)}
               >
                 <NavLink href={`#${item}`}>
-                  {item === 'signin' ? 'Sign In' :
-                   item === 'how-it-works' ? 'How It Works' :
+                  {item === 'how-it-works' ? 'How It Works' :
                    item.charAt(0).toUpperCase() + item.slice(1)}
                 </NavLink>
               </motion.div>
             ))}
+            
+            {/* Auth Button */}
+            <motion.div
+              initial={{ opacity: 0, y: -10 }}
+              animate={createNavItemVariants(4)}
+              className="flex items-center"
+            >
+              <AuthButton />
+            </motion.div>
             
             {/* Theme Toggle */}
             <motion.button 
@@ -192,7 +203,7 @@ const Header = () => {
           transition={{ duration: 0.3, ease: "easeInOut" }}
         >
           <div className="container py-4 flex flex-col space-y-4">
-            {['features', 'how-it-works', 'pricing', 'docs', 'signin'].map((item, i) => (
+            {['features', 'how-it-works', 'pricing', 'docs'].map((item, i) => (
               <motion.div
                 key={item}
                 initial={{ opacity: 0, x: -10 }}
@@ -200,12 +211,21 @@ const Header = () => {
                 transition={{ delay: 0.1 * i, duration: 0.3 }}
               >
                 <MobileNavLink href={`#${item}`} onClick={() => setIsMobileMenuOpen(false)}>
-                  {item === 'signin' ? 'Sign In' :
-                   item === 'how-it-works' ? 'How It Works' :
+                  {item === 'how-it-works' ? 'How It Works' :
                    item.charAt(0).toUpperCase() + item.slice(1)}
                 </MobileNavLink>
               </motion.div>
             ))}
+            
+            {/* Auth Button */}
+            <motion.div
+              initial={{ opacity: 0, x: -10 }}
+              animate={{ opacity: 1, x: 0 }}
+              transition={{ delay: 0.4, duration: 0.3 }}
+              className="py-2"
+            >
+              <AuthButton />
+            </motion.div>
           </div>
         </motion.div>
       </motion.header>

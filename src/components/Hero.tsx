@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
+import Link from 'next/link';
 
 // Animation variants for staggered animations
 const containerVariants = {
@@ -20,8 +21,14 @@ const itemVariants = {
   visible: { opacity: 1, y: 0, transition: { duration: 0.5 } }
 };
 
-// Button click ripple effect component
-const RippleButton = ({ children }: { children: React.ReactNode }) => {
+// Button click ripple effect component that supports links
+const RippleButton = ({ 
+  children, 
+  href 
+}: { 
+  children: React.ReactNode;
+  href?: string;
+}) => {
   const buttonRef = useRef<HTMLButtonElement>(null);
   
   const createRipple = (event: React.MouseEvent<HTMLButtonElement, MouseEvent>) => {
@@ -48,7 +55,7 @@ const RippleButton = ({ children }: { children: React.ReactNode }) => {
     }
   };
   
-  return (
+  const buttonElement = (
     <button 
       ref={buttonRef}
       className="btn btn-primary overflow-hidden relative"
@@ -57,6 +64,12 @@ const RippleButton = ({ children }: { children: React.ReactNode }) => {
       {children}
     </button>
   );
+  
+  if (href) {
+    return <Link href={href}>{buttonElement}</Link>;
+  }
+  
+  return buttonElement;
 };
 
 // Pipeline node animation component
@@ -227,7 +240,7 @@ const Hero = () => {
           </motion.p>
           
           <motion.div variants={itemVariants}>
-            <RippleButton>Get Started</RippleButton>
+            <RippleButton href="/signup">Get Started</RippleButton>
           </motion.div>
         </motion.div>
         
