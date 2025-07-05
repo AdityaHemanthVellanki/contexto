@@ -24,10 +24,6 @@ export interface CanvasSettings {
   gridSize: number;
   zoomLevel: number;
   pipelineName: string;
-  apiKeys: {
-    azureOpenAI: string;
-    firebase: string;
-  };
 }
 
 // Define canvas store state
@@ -59,11 +55,7 @@ const defaultCanvasSettings: CanvasSettings = {
   snapToGrid: true,
   gridSize: 20,
   zoomLevel: 1,
-  pipelineName: 'My Pipeline',
-  apiKeys: {
-    azureOpenAI: '',
-    firebase: ''
-  }
+  pipelineName: 'My Pipeline'
 };
 
 // Initial empty canvas
@@ -78,21 +70,21 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
   canvasSettings: { ...defaultCanvasSettings },
   
   // Set all nodes
-  setNodes: (nodes) => set({ nodes }),
+  setNodes: (nodes) => set({ nodes: Array.isArray(nodes) ? nodes : [] }),
   
   // Set all edges
-  setEdges: (edges) => set({ edges }),
+  setEdges: (edges) => set({ edges: Array.isArray(edges) ? edges : [] }),
   
   // Apply changes to nodes (position, selection, etc.)
   onNodesChange: (changes) => 
     set({
-      nodes: applyNodeChanges(changes, get().nodes) as Node<NodeData>[]
+      nodes: applyNodeChanges(changes, get().nodes || []) as Node<NodeData>[]
     }),
   
   // Apply changes to edges
   onEdgesChange: (changes) => 
     set({
-      edges: applyEdgeChanges(changes, get().edges)
+      edges: applyEdgeChanges(changes, get().edges || [])
     }),
   
   // Connect nodes with an edge
@@ -103,19 +95,19 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
         animated: true,
         style: { stroke: '#2563eb', strokeWidth: 2 },
         type: 'smoothstep'
-      }, get().edges)
+      }, get().edges || [])
     }),
   
   // Add a new node
   addNode: (node) => 
     set({
-      nodes: [...get().nodes, node]
+      nodes: [...(get().nodes || []), node]
     }),
   
   // Update node data
   updateNodeData: (nodeId, data) => 
     set({
-      nodes: get().nodes.map((node) => {
+      nodes: (get().nodes || []).map((node) => {
         if (node.id === nodeId) {
           return { ...node, data: { ...node.data, ...data } };
         }
@@ -125,16 +117,19 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
   
   // Delete a node and its connected edges
   deleteNode: (nodeId) => {
-    const nodesToDelete = get().nodes.filter((node) => node.id === nodeId);
+    const nodes = get().nodes || [];
+    const edges = get().edges || [];
+    
+    const nodesToDelete = nodes.filter((node) => node.id === nodeId);
     if (nodesToDelete.length === 0) return;
     
     // Also remove any edges connected to this node
-    const edgesToKeep = get().edges.filter(
+    const edgesToKeep = edges.filter(
       (edge) => edge.source !== nodeId && edge.target !== nodeId
     );
     
     set({
-      nodes: get().nodes.filter((node) => node.id !== nodeId),
+      nodes: nodes.filter((node) => node.id !== nodeId),
       edges: edgesToKeep,
       selectedNode: get().selectedNode?.id === nodeId ? null : get().selectedNode
     });
@@ -216,6 +211,6 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
   // Delete an edge by ID
   deleteEdge: (edgeId) => 
     set({
-      edges: get().edges.filter((edge) => edge.id !== edgeId)
+      edges: (get().edges || []).filter((edge) => edge.id !== edgeId)
     })
 }));

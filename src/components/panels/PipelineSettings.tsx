@@ -6,20 +6,7 @@ import { FiInfo, FiSave } from 'react-icons/fi';
 import { useCanvasStore } from '@/store/useCanvasStore';
 import { cn } from '@/utils/cn';
 
-const apiKeyFields = [
-  { 
-    id: 'openaiKey', 
-    label: 'Azure OpenAI API Key', 
-    placeholder: 'Enter your Azure OpenAI API Key',
-    description: 'Used for generating completions and embeddings'
-  },
-  { 
-    id: 'firebaseKey', 
-    label: 'Firebase API Key', 
-    placeholder: 'Enter your Firebase API Key',
-    description: 'Used for authentication and storing data'
-  }
-];
+// API keys are now managed through environment variables
 
 const configSettings = [
   {
@@ -48,18 +35,7 @@ const configSettings = [
 
 export default function PipelineSettings() {
   const { canvasSettings, updateCanvasSettings } = useCanvasStore();
-  const [apiKeys, setApiKeys] = useState<Record<string, string>>({
-    openaiKey: '',
-    firebaseKey: ''
-  });
   const [saveMessage, setSaveMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null);
-
-  const handleApiKeyChange = (id: string, value: string) => {
-    setApiKeys(prev => ({
-      ...prev,
-      [id]: value
-    }));
-  };
 
   const handleSaveSettings = () => {
     // In a real implementation, you would save these settings to user preferences
@@ -89,26 +65,11 @@ export default function PipelineSettings() {
       {/* API Keys Section */}
       <section className="mb-8">
         <h3 className="text-md font-medium mb-3 text-gray-700 dark:text-gray-300">API Keys</h3>
-        <div className="space-y-4">
-          {apiKeyFields.map((field) => (
-            <div key={field.id} className="space-y-2">
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                {field.label}
-              </label>
-              <input
-                type="password"
-                id={field.id}
-                value={apiKeys[field.id] || ''}
-                onChange={(e) => handleApiKeyChange(field.id, e.target.value)}
-                placeholder={field.placeholder}
-                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-blue-500 focus:border-blue-500 dark:bg-gray-800"
-              />
-              <p className="text-xs text-gray-500 dark:text-gray-400 flex items-center">
-                <FiInfo className="mr-1 inline-block" /> 
-                {field.description}
-              </p>
-            </div>
-          ))}
+        <div className="p-4 bg-gray-100 dark:bg-gray-800 rounded-md">
+          <p className="text-sm text-gray-700 dark:text-gray-300">
+            API keys for Azure OpenAI and Firebase are managed through environment variables.
+            No user input is required for API keys.
+          </p>
         </div>
       </section>
       

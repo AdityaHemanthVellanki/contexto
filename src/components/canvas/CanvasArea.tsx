@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useState } from 'react';
+import { useCallback, useState, useMemo } from 'react';
 import { motion } from 'framer-motion';
 import {
   ReactFlow,
@@ -34,6 +34,31 @@ import NodeConfigDrawer from '../drawers/NodeConfigDrawer';
 
 // Import the required React Flow styles
 import 'reactflow/dist/style.css';
+
+// SafeReactFlow wrapper to ensure nodes and edges are always arrays
+interface SafeReactFlowProps {
+  nodes: any;
+  edges: any;
+  [key: string]: any;
+}
+
+function SafeReactFlow({ nodes, edges, ...rest }: SafeReactFlowProps) {
+  const safeNodes = useMemo(() => {
+    return Array.isArray(nodes) ? nodes : [];
+  }, [nodes]);
+  
+  const safeEdges = useMemo(() => {
+    return Array.isArray(edges) ? edges : [];
+  }, [edges]);
+  
+  return (
+    <ReactFlow
+      nodes={safeNodes}
+      edges={safeEdges}
+      {...rest}
+    />
+  );
+}
 
 // Register custom node types
 const nodeTypes = {
@@ -85,35 +110,35 @@ function CanvasAreaContent() {
   // Handle node changes (position, selection)
   const handleNodesChange = useCallback(
     (changes: NodeChange[]) => {
-      setNodes((nodes: Node<NodeData>[]) => applyNodeChanges(changes, nodes) as Node<NodeData>[]);
+      setNodes(applyNodeChanges(changes, nodes || []) as Node<NodeData>[]);
     },
-    [setNodes]
+    [setNodes, nodes]
   );
   
   // Handle edge changes
   const handleEdgesChange = useCallback(
     (changes: EdgeChange[]) => {
-      setEdges((edges: Edge[]) => applyEdgeChanges(changes, edges));
+      setEdges(applyEdgeChanges(changes, edges || []));
     },
-    [setEdges]
+    [setEdges, edges]
   );
   
   // Handle connecting nodes
   const handleConnect = useCallback(
     (connection: Connection) => {
-      setEdges((edges: Edge[]) => addEdge({
+      setEdges(addEdge({
         ...connection, 
         type: 'smoothstep',
         animated: true,
         style: { stroke: '#2563eb', strokeWidth: 2 }
-      }, edges));
+      }, edges || []));
     },
-    [setEdges]
+    [setEdges, edges]
   );
   
   // Handle dropping a new node onto the canvas
   const handleDrop = useCallback(
-    (event: React.DragEvent) => {
+    (event: React.DragEvent<HTMLDivElement>) => {
       event.preventDefault();
       
       const nodeType = event.dataTransfer.getData('application/reactflow');
@@ -141,14 +166,14 @@ function CanvasAreaContent() {
       };
       
       // Add the node to the canvas
-      setNodes((nds: Node<NodeData>[]) => nds.concat(newNode));
+      setNodes([...(nodes || []), newNode]);
     },
-    [reactFlowInstance, setNodes]
+    [reactFlowInstance, setNodes, nodes]
   );
   
   return (
     <div className="h-full w-full relative">
-      <ReactFlow
+      <SafeReactFlow
         nodes={nodes}
         edges={edges}
         nodeTypes={nodeTypes}
@@ -157,7 +182,7 @@ function CanvasAreaContent() {
         onConnect={handleConnect}
         onNodeClick={handleNodeClick}
         onDrop={handleDrop}
-        onDragOver={(event) => event.preventDefault()}
+        onDragOver={(event: React.DragEvent<HTMLDivElement>) => event.preventDefault()}
         snapToGrid={canvasSettings.snapToGrid}
         snapGrid={[canvasSettings.gridSize, canvasSettings.gridSize]}
         defaultViewport={{ x: 0, y: 0, zoom: 1 }}
@@ -180,7 +205,7 @@ function CanvasAreaContent() {
           className="bg-white dark:bg-gray-800 rounded-md shadow-md border border-gray-200 dark:border-gray-700"
         />
         <Controls />
-      </ReactFlow>
+      </SafeReactFlow>
       
       {/* Zoom Controls */}
       <div className="absolute bottom-4 left-4 flex flex-col gap-2">
