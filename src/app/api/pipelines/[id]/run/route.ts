@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@/utils/firebase-admin';
 import { db } from '@/utils/firebase';
-import { doc, getDoc, collection, addDoc, serverTimestamp } from 'firebase/firestore';
+import { doc, getDoc } from 'firebase/firestore';
+import { executePipeline } from '@/services/executePipeline';
 
 // Helper function to authenticate requests
 async function authenticateRequest(request: NextRequest) {
@@ -33,7 +34,15 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
   
   try {
     const userId = authResult.userId;
-    const { inputs } = await request.json();
+    if (!userId) {
+      return NextResponse.json({ error: 'User ID is required' }, { status: 401 });
+    }
+    
+    const { prompt } = await request.json();
+    
+    if (!prompt) {
+      return NextResponse.json({ error: 'Prompt is required to run the pipeline' }, { status: 400 });
+    }
     
     // Get the pipeline
     const pipelineRef = doc(db, 'pipelines', pipelineId);
@@ -50,28 +59,45 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
       return NextResponse.json({ error: 'Access denied' }, { status: 403 });
     }
     
-    // In a real implementation, you would execute the pipeline here
-    // For now, we'll just return a mock result as in the original function
-    const result = {
+    // Execute the pipeline with the real implementation
+    const pipelineResult = await executePipeline(
+      pipelineData.graph,
+      prompt,
+      userId
+    );
+    
+    // Return the execution result
+    return NextResponse.json({
       success: true,
-      outputs: {
-        message: 'Pipeline execution completed successfully',
-        results: inputs || {}
-      }
-    };
-    
-    // Log usage
-    await addDoc(collection(db, 'usage_metrics'), {
-      userId,
-      callType: 'pipeline_execution',
-      promptTokens: 100, // Example values
-      completionTokens: 50, // Example values
-      timestamp: serverTimestamp()
+      result: pipelineResult.result,
+      usage: pipelineResult.usageReport.total
     });
-    
-    return NextResponse.json(result);
   } catch (error: any) {
     console.error('Error running pipeline:', error);
-    return NextResponse.json({ error: 'Failed to run pipeline' }, { status: 500 });
+    
+    // Provide more detailed error feedback based on the error type
+    if (error instanceof Error) {
+      if (error.message.includes('token limit')) {
+        return NextResponse.json({ 
+          error: 'Token limit exceeded - try with a shorter prompt or smaller context' 
+        }, { status: 400 });
+      } else if (error.message.includes('API key') || error.message.includes('authentication')) {
+        return NextResponse.json({ 
+          error: 'Azure OpenAI API authentication failed - check API key configuration' 
+        }, { status: 500 });
+      } else if (error.message.includes('rate limit')) {
+        return NextResponse.json({ 
+          error: 'Rate limit exceeded - try again later' 
+        }, { status: 429 });
+      } else if (error.message.includes('cycle')) {
+        return NextResponse.json({ 
+          error: 'Pipeline graph contains cycles - please fix the pipeline structure' 
+        }, { status: 400 });
+      }
+      
+      return NextResponse.json({ error: `Failed to run pipeline: ${error.message}` }, { status: 500 });
+    }
+    
+    return NextResponse.json({ error: 'Failed to run pipeline due to an unknown error' }, { status: 500 });
   }
 }
