@@ -24,6 +24,8 @@ export interface CanvasSettings {
   gridSize: number;
   zoomLevel: number;
   pipelineName: string;
+  showMinimap: boolean;
+  showControls: boolean;
 }
 
 // Define canvas store state
@@ -55,7 +57,9 @@ const defaultCanvasSettings: CanvasSettings = {
   snapToGrid: true,
   gridSize: 20,
   zoomLevel: 1,
-  pipelineName: 'My Pipeline'
+  pipelineName: 'My Pipeline',
+  showMinimap: true,
+  showControls: true
 };
 
 // Initial empty canvas
