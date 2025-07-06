@@ -6,7 +6,16 @@ import { NodeData } from '@/store/useCanvasStore';
 import { useChatStore } from '@/store/useChatStore';
 import { cn } from '@/utils/cn';
 
-type BaseNodeProps = NodeProps<NodeData>;
+// Extend the NodeProps to include all required properties
+type BaseNodeProps = NodeProps<NodeData> & {
+  type?: string;
+  zIndex?: number;
+  isConnectable?: boolean;
+  xPos?: number;
+  yPos?: number;
+  dragHandle?: string;
+  dragging?: boolean;
+};
 
 export default function BaseNode({ 
   id, 

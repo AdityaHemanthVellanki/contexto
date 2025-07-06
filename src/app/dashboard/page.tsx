@@ -42,18 +42,25 @@ export default function DashboardPage() {
   if (user) {
     return (
       <div className="h-[calc(100vh-64px)] flex">
-        <SplitPane
-          split="vertical"
-          minSize={300}
-          maxSize={-300}
-          defaultSize="60%"
-          className="h-full"
-        >
-          <div className="h-full">
-            <CanvasArea />
-          </div>
-          <RightPanel />
-        </SplitPane>
+        <div className="h-full">
+          {/* @ts-ignore - SplitPane has typing issues with children */}
+          <SplitPane
+            split="vertical"
+            minSize={300}
+            maxSize={-300}
+            defaultSize="60%"
+            style={{ position: 'relative' }}
+            pane1Style={{ height: '100%' }}
+            pane2Style={{ height: '100%' }}
+          >
+            <div className="h-full">
+              <CanvasArea />
+            </div>
+            <div className="h-full">
+              <RightPanel />
+            </div>
+          </SplitPane>
+        </div>
       </div>
     );
   }

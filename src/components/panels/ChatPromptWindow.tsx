@@ -6,7 +6,10 @@ import { BiSend } from 'react-icons/bi';
 import { FiCpu, FiLoader } from 'react-icons/fi';
 import { useChatStore, ChatMessage } from '@/store/useChatStore';
 import { useCanvasStore } from '@/store/useCanvasStore';
-import { openai, modelMapping } from '@/utils/azure-openai';
+import { modelMapping } from '@/lib/azureOpenAI';
+// Import firebase services if needed
+import { getAuth } from 'firebase/auth';
+import { getFirestore } from 'firebase/firestore';
 
 export default function ChatPromptWindow() {
   const [prompt, setPrompt] = useState('');
@@ -17,9 +20,8 @@ export default function ChatPromptWindow() {
   const { 
     messages, 
     addMessage, 
-    isGeneratingPipeline, 
-    setIsGeneratingPipeline,
-    setGenerationResult 
+    isGenerating, 
+    setIsGenerating
   } = useChatStore();
   
   const { setNodes, setEdges } = useCanvasStore();
@@ -52,29 +54,24 @@ export default function ChatPromptWindow() {
   };
 
   const handleSubmitPrompt = async () => {
-    if (!prompt.trim() || isGeneratingPipeline) return;
-    
-    const userMessage: Omit<ChatMessage, 'id' | 'timestamp'> = {
-      role: 'user',
-      content: prompt,
-    };
+    if (!prompt.trim() || isGenerating) return;
     
     // Add user message to chat
-    addMessage(userMessage);
+    addMessage('user', prompt);
     setPrompt('');
     setTextareaHeight(80);
     
     // Start generating pipeline
-    setIsGeneratingPipeline(true);
+    setIsGenerating(true);
     
     try {
-      // In a real implementation, you would call the OpenAI API here
+      // In a real implementation, you would call the Azure OpenAI API here
       // For now, we'll simulate a response after a delay
       
-      // Example of how this might be implemented with real OpenAI:
+      // Example of how this might be implemented with Azure OpenAI:
       /*
       const response = await openai.chat.completions.create({
-        model: modelMapping.turbo,
+        deploymentId: modelMapping.turbo,
         messages: [
           {
             role: 'system',
@@ -122,7 +119,7 @@ export default function ChatPromptWindow() {
             data: {
               type: 'embedder',
               label: 'Azure Embeddings',
-              settings: { model: 'text-embedding-ada-002' }
+              settings: { model: modelMapping.embed }
             }
           }
         ],
@@ -133,34 +130,21 @@ export default function ChatPromptWindow() {
         summary: "Created a simple pipeline that processes PDF files, chunks the content into 1000-token segments, and creates embeddings using Azure's embedding model."
       };
       
+      // Add assistant message with pipeline data
+      addMessage('assistant', 'I generated a pipeline based on your description. You can see it in the canvas now.');
+      
       // Update the canvas with the generated nodes and edges
       setNodes(mockPipelineData.nodes);
       setEdges(mockPipelineData.edges);
-      
-      // Store the generation result
-      setGenerationResult({
-        nodes: mockPipelineData.nodes,
-        edges: mockPipelineData.edges,
-        summary: mockPipelineData.summary
-      });
-      
-      // Add assistant message to chat
-      addMessage({
-        role: 'assistant',
-        content: mockPipelineData.summary,
-      });
       
     } catch (error) {
       console.error('Error generating pipeline:', error);
       
       // Add error message to chat
-      addMessage({
-        role: 'assistant',
-        content: 'Sorry, I encountered an error while generating the pipeline. Please try again.',
-      });
+      addMessage('assistant', 'Sorry, I encountered an error while generating the pipeline. Please try again.');
       
     } finally {
-      setIsGeneratingPipeline(false);
+      setIsGenerating(false);
     }
   };
 
@@ -222,10 +206,10 @@ export default function ChatPromptWindow() {
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}
             onClick={handleSubmitPrompt}
-            disabled={!prompt.trim() || isGeneratingPipeline}
+            disabled={!prompt.trim() || isGenerating}
             className="p-3 bg-blue-500 hover:bg-blue-600 text-white rounded-lg disabled:bg-blue-300 disabled:cursor-not-allowed"
           >
-            {isGeneratingPipeline ? (
+            {isGenerating ? (
               <FiLoader className="w-5 h-5 animate-spin" />
             ) : (
               <BiSend className="w-5 h-5" />
@@ -237,10 +221,10 @@ export default function ChatPromptWindow() {
             whileHover={{ scale: 1.02 }}
             whileTap={{ scale: 0.98 }}
             onClick={handleSubmitPrompt}
-            disabled={!prompt.trim() || isGeneratingPipeline}
+            disabled={!prompt.trim() || isGenerating}
             className="mx-auto py-2 px-4 bg-blue-100 hover:bg-blue-200 text-blue-700 font-medium rounded-lg disabled:opacity-50 disabled:cursor-not-allowed flex items-center space-x-2"
           >
-            {isGeneratingPipeline ? (
+            {isGenerating ? (
               <>
                 <FiLoader className="w-4 h-4 animate-spin" />
                 <span>Generating Pipeline...</span>

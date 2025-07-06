@@ -12,7 +12,7 @@ const samplePipelines = [
     nodes: [
       { id: "ds-1", type: "dataSource", position: { x: 100, y: 100 }, data: { type: "dataSource", label: "PDF Loader", settings: { sourceType: "PDF", filepath: "/documents/sample.pdf" } } },
       { id: "ch-1", type: "chunker", position: { x: 100, y: 250 }, data: { type: "chunker", label: "Text Splitter", settings: { chunkSize: 1000, chunkOverlap: 200, splitBy: "token" } } },
-      { id: "em-1", type: "embedder", position: { x: 100, y: 400 }, data: { type: "embedder", label: "Embeddings", settings: { model: "text-embedding-ada-002", dimensions: 1536 } } },
+      { id: "em-1", type: "embedder", position: { x: 100, y: 400 }, data: { type: "embedder", label: "Azure Embeddings", settings: { model: "azure-embedding", dimensions: 1536 } } },
       { id: "ix-1", type: "indexer", position: { x: 100, y: 550 }, data: { type: "indexer", label: "Firestore Vector Store", settings: { vectorStore: "Firestore", collectionName: "pdf-embeddings" } } },
       { id: "re-1", type: "retriever", position: { x: 400, y: 400 }, data: { type: "retriever", label: "Retriever", settings: { topK: 5, scoreThreshold: 0.75 } } },
       { id: "op-1", type: "output", position: { x: 400, y: 550 }, data: { type: "output", label: "Results Formatter", settings: { outputFormat: "JSON", includeMetadata: true } } }
@@ -30,7 +30,7 @@ const samplePipelines = [
     nodes: [
       { id: "ds-1", type: "dataSource", position: { x: 100, y: 100 }, data: { type: "dataSource", label: "URL Loader", settings: { sourceType: "Website URL", filepath: "https://example.com" } } },
       { id: "ch-1", type: "chunker", position: { x: 100, y: 250 }, data: { type: "chunker", label: "HTML Splitter", settings: { chunkSize: 1500, chunkOverlap: 300, splitBy: "paragraph" } } },
-      { id: "em-1", type: "embedder", position: { x: 400, y: 250 }, data: { type: "embedder", label: "Embeddings", settings: { model: "text-embedding-3-small", dimensions: 1536 } } },
+      { id: "em-1", type: "embedder", position: { x: 400, y: 250 }, data: { type: "embedder", label: "Azure Embeddings", settings: { model: "azure-embedding", dimensions: 1536 } } },
       { id: "ix-1", type: "indexer", position: { x: 400, y: 400 }, data: { type: "indexer", label: "FAISS Store", settings: { vectorStore: "FAISS (in-memory)", collectionName: "web-scrape" } } },
       { id: "op-1", type: "output", position: { x: 700, y: 400 }, data: { type: "output", label: "Markdown Output", settings: { outputFormat: "Markdown", includeMetadata: true } } }
     ],
