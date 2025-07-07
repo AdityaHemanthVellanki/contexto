@@ -96,20 +96,22 @@ export default function NodePalette() {
         {nodeTypes.map((nodeType) => (
           <motion.div
             key={nodeType.type}
-            draggable
-            onDragStart={(e) => handleDragStart(e, nodeType.type)}
-            onDragEnd={handleDragEnd}
             whileHover={{ scale: 1.02 }}
             whileTap={{ scale: 0.98 }}
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.3 }}
-            className={cn(
-              'p-4 rounded-lg shadow-sm cursor-move border-2 border-transparent',
-              nodeType.color,
-              draggedNode === nodeType.type && 'ring-2 ring-white border-white'
-            )}
           >
+            <div 
+              draggable
+              onDragStart={(e) => handleDragStart(e, nodeType.type)}
+              onDragEnd={handleDragEnd}
+              className={cn(
+                'p-4 rounded-lg shadow-sm cursor-move border-2 border-transparent',
+                nodeType.color,
+                draggedNode === nodeType.type && 'ring-2 ring-white border-white'
+              )}
+            >
             <div className="flex items-center">
               <div className="p-2 bg-white/10 rounded-md">
                 <nodeType.icon className="w-5 h-5 text-white" />
@@ -127,6 +129,7 @@ export default function NodePalette() {
             >
               Add to Canvas
             </button>
+            </div>
           </motion.div>
         ))}
       </div>

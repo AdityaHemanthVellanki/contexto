@@ -134,11 +134,33 @@ export const api = {
     }
   },
   
-  // Run a pipeline - Currently mocked as we don't have Functions API
-  runPipeline: async (id: string, inputs: any) => {
-    console.warn('Pipeline execution is mocked - no Firebase Functions available');
-    // Just return the inputs as outputs for now
-    return { data: { outputs: { ...inputs } } };
+  // Run a pipeline - Real implementation with Firebase Functions
+  runPipeline: async (id: string, prompt: string) => {
+    const user = checkAuth();
+    
+    try {
+      // Get the auth token for the API call
+      const token = await user.getIdToken();
+      
+      const response = await fetch(`/api/pipelines/${id}/run`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ prompt })
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to run pipeline');
+      }
+      
+      return { data: await response.json() };
+    } catch (error: any) {
+      console.error('Error running pipeline:', error);
+      throw new Error(`Error running pipeline: ${error.message}`);
+    }
   },
   
   // Log usage metrics
@@ -146,18 +168,27 @@ export const api = {
     const user = checkAuth();
     
     try {
-      const usageData = {
-        callType,
-        promptTokens,
-        completionTokens,
-        totalTokens: promptTokens + completionTokens,
-        userId: user.uid,
-        timestamp: Timestamp.now()
-      };
+      // Get the auth token for the API call
+      const token = await user.getIdToken();
       
-      const usageCollection = collection(db, 'usage_metrics');
-      const newDocRef = doc(usageCollection);
-      await setDoc(newDocRef, usageData);
+      const response = await fetch('/api/usage', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          callType,
+          promptTokens,
+          completionTokens
+        })
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json();
+        console.error('Error logging usage:', errorData.error);
+        return { success: false, error: errorData.error };
+      }
       
       return { success: true };
     } catch (error: any) {

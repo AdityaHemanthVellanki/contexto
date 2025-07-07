@@ -1,9 +1,10 @@
 'use client';
 
 import { useState } from 'react';
+import { useAuth } from '@/context/AuthContext';
 import { useCanvasStore } from '@/store/useCanvasStore';
 import { Graph } from '@/services/executePipeline';
-import { runRefineAnswer } from '@/services/refineAnswer';
+import { api } from '@/utils/api';
 import { BiPlay, BiLoader, BiRefresh } from 'react-icons/bi';
 
 export default function TestPanel() {
@@ -13,7 +14,9 @@ export default function TestPanel() {
   const [refining, setRefining] = useState(false);
   const [logs, setLogs] = useState<string[]>([]);
   const [usageReport, setUsageReport] = useState<Record<string, any> | null>(null);
+  const [pipelineId, setPipelineId] = useState<string | null>(null);
   
+  const { user } = useAuth();
   const { nodes, edges } = useCanvasStore();
   
   // Convert canvas nodes and edges to the format expected by executePipeline
@@ -48,28 +51,38 @@ export default function TestPanel() {
       return;
     }
     
+    if (!user) {
+      alert('You must be signed in to run pipelines');
+      return;
+    }
+    
     setLoading(true);
     setLogs(['Starting pipeline execution...']);
     setResult(null);
     setUsageReport(null);
     
     try {
+      // If we don't have a saved pipeline yet, create one
+      let currentPipelineId = pipelineId;
+      
+      if (!currentPipelineId) {
+        setLogs(prev => [...prev, 'Creating temporary pipeline...']);
+        const savedPipeline = await api.savePipeline({
+          name: 'Temporary Test Pipeline',
+          graph: getGraphData()
+        });
+        
+        currentPipelineId = savedPipeline.data.id;
+        setPipelineId(currentPipelineId);
+        setLogs(prev => [...prev, 'Temporary pipeline created']);
+      }
+      
       // Call the API to run the pipeline
-      const response = await fetch('/api/runPipeline', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          graph: getGraphData(),
-          prompt
-        })
-      });
+      setLogs(prev => [...prev, 'Executing pipeline...']);
+      const pipelineResult = await api.runPipeline(currentPipelineId!, prompt);
       
-      const data = await response.json();
-      
-      if (!response.ok) {
-        throw new Error(data.error || 'Error executing pipeline');
+      if (!pipelineResult.data) {
+        throw new Error('Failed to run pipeline - no data returned');
       }
       
       // Update logs with execution results
@@ -79,8 +92,8 @@ export default function TestPanel() {
         'Result:',
       ]);
       
-      setResult(data.result);
-      setUsageReport(data.usageReport);
+      setResult(pipelineResult.data.result);
+      setUsageReport(pipelineResult.data.usage);
       
     } catch (error) {
       console.error('Error running pipeline:', error);
@@ -100,11 +113,36 @@ export default function TestPanel() {
       return;
     }
     
+    if (!user) {
+      alert('You must be signed in to refine answers');
+      return;
+    }
+    
     setRefining(true);
     
     try {
-      // Call the refineAnswer service directly
-      const refinedResult = await runRefineAnswer(result, 'Make this more concise and clear.');
+      // Get the user's auth token
+      const token = await user.getIdToken();
+      
+      // Call the refineAnswer API
+      const response = await fetch('/api/refine', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          text: result,
+          instructions: 'Make this more concise and clear.'
+        })
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to refine answer');
+      }
+      
+      const data = await response.json();
       
       setLogs(prev => [
         ...prev,
@@ -112,7 +150,15 @@ export default function TestPanel() {
         'Refined Result:',
       ]);
       
-      setResult(refinedResult);
+      setResult(data.text);
+      
+      // Update usage report if provided
+      if (data.usage) {
+        setUsageReport(prev => ({
+          ...prev,
+          refine: data.usage
+        }));
+      }
       
     } catch (error) {
       console.error('Error refining answer:', error);

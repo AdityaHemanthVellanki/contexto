@@ -58,7 +58,7 @@ export default async function handler(
 
     // Execute the pipeline
     console.log(`Executing pipeline for user ${userId}`);
-    const { result, usageReport } = await executePipeline(graph, prompt);
+    const { result, usageReport } = await executePipeline(graph, prompt, userId);
 
     // Return the results
     return res.status(200).json({

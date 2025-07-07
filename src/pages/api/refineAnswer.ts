@@ -57,7 +57,9 @@ export default async function handler(
 
     // Execute the refinement
     console.log(`Refining answer for user ${userId}`);
-    const result = await runRefineAnswer(text, instructions);
+    // Use default instructions if none provided
+    const refinementInstructions = instructions || 'Improve this text for clarity, coherence, and accuracy.';
+    const result = await runRefineAnswer(text, refinementInstructions, userId);
 
     // Return the results
     return res.status(200).json({

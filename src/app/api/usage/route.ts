@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@/utils/firebase-admin';
-import { db } from '@/utils/firebase';
-import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
+import { logUsage } from '@/services/usage';
 
 // Helper function to authenticate requests
 async function authenticateRequest(request: NextRequest) {
@@ -32,25 +31,30 @@ export async function POST(request: NextRequest) {
   
   try {
     const userId = authResult.userId;
+    
+    if (!userId) {
+      return NextResponse.json({ error: 'User ID is required' }, { status: 401 });
+    }
+    
     const { callType, promptTokens, completionTokens } = await request.json();
     
     if (!callType || typeof promptTokens !== 'number' || typeof completionTokens !== 'number') {
       return NextResponse.json({ error: 'Missing or invalid required fields' }, { status: 400 });
     }
     
-    const usageData = {
-      userId,
-      callType,
-      promptTokens,
-      completionTokens,
-      timestamp: serverTimestamp()
-    };
+    // Use the updated logUsage service function
+    await logUsage(
+      callType, 
+      { promptTokens, completionTokens },
+      userId
+    );
     
-    const usageRef = await addDoc(collection(db, 'usage_metrics'), usageData);
-    
-    return NextResponse.json({ id: usageRef.id });
+    return NextResponse.json({ success: true });
   } catch (error: any) {
     console.error('Error logging usage:', error);
-    return NextResponse.json({ error: 'Failed to log usage' }, { status: 500 });
+    if (error instanceof Error) {
+      return NextResponse.json({ error: `Failed to log usage: ${error.message}` }, { status: 500 });
+    }
+    return NextResponse.json({ error: 'Failed to log usage due to an unknown error' }, { status: 500 });
   }
 }
