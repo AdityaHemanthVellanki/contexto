@@ -45,12 +45,15 @@ FIREBASE_SERVICE_ACCOUNT={"type":"service_account","project_id":"...","private_k
 1. **"Failed to determine project ID"** - This occurs when Firebase Admin can't detect your project. Make sure your `NEXT_PUBLIC_FIREBASE_PROJECT_ID` is set correctly.
 
 2. **Authentication errors** - If you're getting 401 errors during development, check that `NEXT_PUBLIC_SKIP_API_AUTH_VERIFICATION=true` is set in your `.env.local` file.
+   - The application now defaults to simplified token validation in development mode unless explicitly disabled
+   - Authentication errors in the UI will show a "Sign in again" button to help users recover
+   - If you're still seeing authentication errors, try clearing your browser cookies and local storage
 
 3. **Firestore connection issues** - Verify your Firebase configuration and check that the Firestore service is enabled in your Firebase console.
 
 4. **"Too Many Requests" errors** - The application implements rate limiting to prevent excessive API calls. If you're seeing 429 errors:
    - Client-side components have built-in retry logic with exponential backoff
-   - API routes limit requests to 10 per 5 seconds for list endpoints and 5 per 10 seconds for download endpoints
+   - API routes limit requests to 10 per 5 seconds for list endpoints and 5 per 10 seconds for upload/download endpoints
    - During development, you can modify these limits in the rate-limiter.ts file
 
 ## Dashboard Loading Issues

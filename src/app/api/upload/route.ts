@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getFirestore } from '@/lib/firebase-admin';
 import * as admin from 'firebase-admin';
 import { authenticateRequest } from '@/lib/api-auth';
+import { rateLimit } from '@/lib/rate-limiter';
 
 // Initialize Firebase Admin services
 const db = getFirestore();
@@ -9,6 +10,18 @@ const FieldValue = admin.firestore.FieldValue;
 
 export async function POST(request: NextRequest) {
   try {
+    // Apply rate limiting - 5 requests per 10 seconds per user/IP
+    // More restrictive for uploads as they're resource-intensive
+    const rateLimitResult = await rateLimit(request, {
+      limit: 5,
+      windowSizeInSeconds: 10
+    });
+    
+    // Return rate limit response if limit exceeded
+    if (rateLimitResult.limited && rateLimitResult.response) {
+      return rateLimitResult.response;
+    }
+    
     // Authenticate request
     const auth = await authenticateRequest(request);
     
@@ -78,12 +91,21 @@ export async function POST(request: NextRequest) {
       status: 'uploaded',
     });
 
-    // Return success response
-    return NextResponse.json({ 
+    // Create response with the file details
+    const response = NextResponse.json({
       fileId: uploadId,
       fileName: file.name,
-      message: 'File uploaded successfully' 
+      message: 'File uploaded successfully'
     }, { status: 200 });
+    
+    // Add rate limit headers to response
+    if (rateLimitResult.headers) {
+      Object.entries(rateLimitResult.headers).forEach(([key, value]) => {
+        response.headers.set(key, value as string);
+      });
+    }
+    
+    return response;
 
   } catch (error) {
     console.error('Upload error:', error);

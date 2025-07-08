@@ -1,7 +1,8 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
-import { FiFile, FiLoader, FiRefreshCw } from 'react-icons/fi';
+import { FiFile, FiLoader, FiRefreshCw, FiLogIn } from 'react-icons/fi';
 import { useAuth } from '@/context/AuthContext';
 import { useToast } from '@/components/ui/toast';
+import { useRouter } from 'next/navigation';
 
 interface FileItem {
   fileId: string;
@@ -22,9 +23,11 @@ export default function FileList({ onSelectFile, activeFileId, refreshTrigger = 
   const [files, setFiles] = useState<FileItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [isAuthError, setIsAuthError] = useState(false);
   const [retryCount, setRetryCount] = useState(0);
   const { user } = useAuth();
   const { toast } = useToast();
+  const router = useRouter();
   
   // Use refs to track the last fetch time and prevent excessive API calls
   const lastFetchTimeRef = useRef<number>(0);
@@ -96,6 +99,7 @@ export default function FileList({ onSelectFile, activeFileId, refreshTrigger = 
       if (!response.ok) {
         // If response is 401/403, it's an auth issue
         if (response.status === 401 || response.status === 403) {
+          setIsAuthError(true);
           throw new Error('Authentication error. Please sign in again.');
         }
         
@@ -191,12 +195,22 @@ export default function FileList({ onSelectFile, activeFileId, refreshTrigger = 
       <div className="flex flex-col items-center justify-center p-6 h-48 text-center">
         <p className="text-red-500 mb-2">Unable to load files</p>
         <p className="text-sm text-gray-500">{error}</p>
-        <button 
-          onClick={() => fetchFiles()} 
-          className="mt-4 flex items-center px-3 py-1 text-sm bg-blue-100 text-blue-700 rounded hover:bg-blue-200 transition-colors"
-        >
-          <FiRefreshCw className="mr-1" /> Retry
-        </button>
+        
+        {isAuthError ? (
+          <button 
+            onClick={() => router.push('/auth/signin')} 
+            className="mt-4 flex items-center px-3 py-1 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
+          >
+            <FiLogIn className="mr-1" /> Sign in again
+          </button>
+        ) : (
+          <button 
+            onClick={() => fetchFiles()} 
+            className="mt-4 flex items-center px-3 py-1 text-sm bg-blue-100 text-blue-700 rounded hover:bg-blue-200 transition-colors"
+          >
+            <FiRefreshCw className="mr-1" /> Retry
+          </button>
+        )}
       </div>
     );
   }

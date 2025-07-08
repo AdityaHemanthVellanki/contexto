@@ -1,7 +1,8 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
-import { FiDownload, FiPackage, FiLoader, FiRefreshCw } from 'react-icons/fi';
+import { FiDownload, FiPackage, FiLoader, FiRefreshCw, FiLogIn } from 'react-icons/fi';
 import { useAuth } from '@/context/AuthContext';
 import { useToast } from '@/components/ui/toast';
+import { useRouter } from 'next/navigation';
 
 interface ExportItem {
   exportId: string;
@@ -21,9 +22,11 @@ export default function ExportList({ refreshTrigger = 0 }: ExportListProps) {
   const [exports, setExports] = useState<ExportItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [isAuthError, setIsAuthError] = useState(false);
   const [retryCount, setRetryCount] = useState(0);
   const { user } = useAuth();
   const { toast } = useToast();
+  const router = useRouter();
   
   // Use refs to track the last fetch time and prevent excessive API calls
   const lastFetchTimeRef = useRef<number>(0);
@@ -95,6 +98,7 @@ export default function ExportList({ refreshTrigger = 0 }: ExportListProps) {
       if (!response.ok) {
         // If response is 401/403, it's an auth issue
         if (response.status === 401 || response.status === 403) {
+          setIsAuthError(true);
           throw new Error('Authentication error. Please sign in again.');
         }
         
@@ -173,20 +177,29 @@ export default function ExportList({ refreshTrigger = 0 }: ExportListProps) {
   }, [fetchExports, refreshTrigger]);
 
   const handleDownload = async (exportId: string, fileName: string) => {
-    if (!user) return;
-    
     try {
+      if (!user) {
+        toast({
+          title: 'Authentication Required',
+          description: 'Please sign in to download exports',
+          variant: 'destructive',
+          duration: 5000
+        });
+        return;
+      }
+      
       // Get the user's auth token
       const token = await user.getIdToken();
       
-      // Fetch the export content from the API with a timeout
+      // Fetch the export content with a timeout
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 second timeout for downloads
+      const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout for larger files
       
       const response = await fetch(`/api/export/${exportId}`, {
         headers: {
           'Authorization': `Bearer ${token}`,
-          'Cache-Control': 'no-cache'
+          'Cache-Control': 'no-cache',
+          'Pragma': 'no-cache'
         },
         signal: controller.signal
       });
@@ -194,6 +207,19 @@ export default function ExportList({ refreshTrigger = 0 }: ExportListProps) {
       clearTimeout(timeoutId);
 
       if (!response.ok) {
+        // Handle specific error cases
+        if (response.status === 401 || response.status === 403) {
+          setIsAuthError(true);
+          setError('Authentication error. Please sign in again.');
+          throw new Error('Authentication error. Please sign in again.');
+        }
+        
+        // Handle rate limiting
+        if (response.status === 429) {
+          const retryAfter = parseInt(response.headers.get('Retry-After') || '1', 10);
+          throw new Error(`Rate limited. Please try again in ${retryAfter} seconds.`);
+        }
+        
         throw new Error(`Failed to fetch export: ${response.statusText}`);
       }
 
@@ -246,12 +272,22 @@ export default function ExportList({ refreshTrigger = 0 }: ExportListProps) {
       <div className="flex flex-col items-center justify-center p-6 h-48 text-center">
         <p className="text-red-500 mb-2">Unable to load exports</p>
         <p className="text-sm text-gray-500">{error}</p>
-        <button 
-          onClick={() => fetchExports()} 
-          className="mt-4 flex items-center px-3 py-1 text-sm bg-blue-100 text-blue-700 rounded hover:bg-blue-200 transition-colors"
-        >
-          <FiRefreshCw className="mr-1" /> Retry
-        </button>
+        
+        {isAuthError ? (
+          <button 
+            onClick={() => router.push('/auth/signin')} 
+            className="mt-4 flex items-center px-3 py-1 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
+          >
+            <FiLogIn className="mr-1" /> Sign in again
+          </button>
+        ) : (
+          <button 
+            onClick={() => fetchExports()} 
+            className="mt-4 flex items-center px-3 py-1 text-sm bg-blue-100 text-blue-700 rounded hover:bg-blue-200 transition-colors"
+          >
+            <FiRefreshCw className="mr-1" /> Retry
+          </button>
+        )}
       </div>
     );
   }
