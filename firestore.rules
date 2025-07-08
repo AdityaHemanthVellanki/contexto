@@ -11,6 +11,33 @@ service cloud.firestore {
                   && request.auth.uid == resource.data.userId;
     }
 
+    // Uploads: only the owner can access their own uploads
+    match /uploads/{uploadId} {
+      allow create: if request.auth != null && request.auth.uid == request.resource.data.userId;
+      allow read, update, delete: if request.auth != null && request.auth.uid == resource.data.userId;
+    }
+
+    // Embeddings: only the owner can access their embeddings
+    match /embeddings/{embeddingId} {
+      allow create: if request.auth != null && request.auth.uid == request.resource.data.userId;
+      allow read: if request.auth != null && request.auth.uid == resource.data.userId;
+      allow update, delete: if false;
+    }
+    
+    // Embeddings subcollections (chunks)
+    match /embeddings/{embeddingId}/{document=**} {
+      allow read: if request.auth != null && 
+                    get(/databases/$(database)/documents/embeddings/$(embeddingId)).data.userId == request.auth.uid;
+      allow write: if false;
+    }
+    
+    // Exports: only the owner can create and read their exports
+    match /exports/{exportId} {
+      allow create: if request.auth != null && request.auth.uid == request.resource.data.userId;
+      allow read:   if request.auth != null && request.auth.uid == resource.data.userId;
+      allow update, delete: if false;
+    }
+
     // Usage metrics: any authenticated user can write their own usage logs,
     // but nobody can read them client-side.
     match /usage_metrics/{entryId} {
@@ -19,10 +46,5 @@ service cloud.firestore {
       allow read: if false;
       allow update, delete: if false;
     }
-
-    // Serve documents or settings you need publicly (e.g. your app’s config)
-    // match /public/{doc} {
-    //   allow read: if true;
-    // }
   }
 }

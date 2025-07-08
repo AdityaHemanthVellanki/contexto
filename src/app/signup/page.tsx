@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, FormEvent } from 'react';
+import { useState, FormEvent, useEffect } from 'react';
 import { useAuth } from '@/context/AuthContext';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
@@ -16,11 +16,12 @@ export default function SignUp() {
   const { signInWithGoogle, signUpWithEmail, user } = useAuth();
   const router = useRouter();
 
-  // If user is already signed in, redirect to dashboard
-  if (user) {
-    router.push('/dashboard');
-    return null;
-  }
+  // Use useEffect for navigation instead of during render
+  useEffect(() => {
+    if (user) {
+      router.push('/dashboard');
+    }
+  }, [user, router]);
 
   const handleEmailSignUp = async (e: FormEvent) => {
     e.preventDefault();

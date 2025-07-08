@@ -7,9 +7,9 @@ import { FiCpu, FiLoader } from 'react-icons/fi';
 import { useChatStore, ChatMessage } from '@/store/useChatStore';
 import { useCanvasStore } from '@/store/useCanvasStore';
 import { modelMapping } from '@/lib/azureOpenAI';
-// Import firebase services if needed
+// Import firebase services
 import { getAuth } from 'firebase/auth';
-import { getFirestore } from 'firebase/firestore';
+import { getFirestore, collection, addDoc, serverTimestamp } from 'firebase/firestore';
 
 export default function ChatPromptWindow() {
   const [prompt, setPrompt] = useState('');
@@ -65,26 +65,21 @@ export default function ChatPromptWindow() {
     setIsGenerating(true);
     
     try {
-      // In a real implementation, you would call the Azure OpenAI API here
-      // For now, we'll simulate a response after a delay
+      // Get current user
+      const auth = getAuth();
+      const user = auth.currentUser;
+      const userId = user?.uid || 'anonymous';
       
-      // Example of how this might be implemented with Azure OpenAI:
-      /*
-      const response = await openai.chat.completions.create({
-        deploymentId: modelMapping.turbo,
-        messages: [
-          {
-            role: 'system',
-            content: 'You are an AI assistant that converts natural language descriptions into JSON pipeline configurations for a data processing system.'
-          },
-          { role: 'user', content: prompt }
-        ],
-        temperature: 0.7,
-        max_tokens: 1000,
+      // Store the prompt in Firestore
+      const db = getFirestore();
+      const promptsCollection = collection(db, 'prompts');
+      
+      await addDoc(promptsCollection, {
+        userId,
+        prompt,
+        timestamp: serverTimestamp(),
+        status: 'pending'
       });
-      
-      const pipelineData = JSON.parse(response.choices[0].message.content);
-      */
       
       // For now, simulate a response
       await new Promise(resolve => setTimeout(resolve, 1500));
@@ -118,7 +113,7 @@ export default function ChatPromptWindow() {
             position: { x: 500, y: 100 },
             data: {
               type: 'embedder',
-              label: 'Azure Embeddings',
+              label: 'Firebase Embeddings',
               settings: { model: modelMapping.embed }
             }
           }

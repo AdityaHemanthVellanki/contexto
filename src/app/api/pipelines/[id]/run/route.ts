@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { auth } from '@/utils/firebase-admin';
-import { db } from '@/utils/firebase';
+import { verifyIdToken } from '@/lib/auth';
+import { db } from '@/lib/firebase';
 import { doc, getDoc } from 'firebase/firestore';
 import { executePipeline } from '@/services/executePipeline';
 
@@ -14,7 +14,7 @@ async function authenticateRequest(request: NextRequest) {
     }
     
     const idToken = authHeader.split('Bearer ')[1];
-    const decodedToken = await auth.verifyIdToken(idToken);
+    const decodedToken = await verifyIdToken(idToken);
     
     return { authenticated: true, error: null, userId: decodedToken.uid };
   } catch (error) {

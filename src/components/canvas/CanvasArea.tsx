@@ -172,69 +172,88 @@ function CanvasAreaContent() {
   );
   
   return (
-    <div className="h-full w-full relative">
-      <SafeReactFlow
-        nodes={nodes}
-        edges={edges}
-        nodeTypes={nodeTypes}
-        onNodesChange={handleNodesChange}
-        onEdgesChange={handleEdgesChange}
-        onConnect={handleConnect}
-        onNodeClick={handleNodeClick}
-        onDrop={handleDrop}
-        onDragOver={(event: React.DragEvent<HTMLDivElement>) => event.preventDefault()}
-        snapToGrid={canvasSettings.snapToGrid}
-        snapGrid={[canvasSettings.gridSize, canvasSettings.gridSize]}
-        defaultViewport={{ x: 0, y: 0, zoom: 1 }}
-        fitView
-        deleteKeyCode={['Backspace', 'Delete']}
-        multiSelectionKeyCode={['Control', 'Meta']}
-        selectionKeyCode={null}
+    <div className="h-full w-full relative rounded-lg overflow-hidden">
+      <motion.div 
+        className="absolute inset-0"
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ duration: 0.5 }}
       >
-        <Background
-          variant={BackgroundVariant.Dots}
-          gap={canvasSettings.gridSize}
-          size={1}
-          color="#e2e8f0"
-          className="dark:bg-gray-900"
-        />
-        <MiniMap
-          nodeStrokeWidth={3}
-          zoomable
-          pannable
-          className="bg-white dark:bg-gray-800 rounded-md shadow-md border border-gray-200 dark:border-gray-700"
-        />
-        <Controls />
-      </SafeReactFlow>
+        <SafeReactFlow
+          nodes={nodes}
+          edges={edges}
+          nodeTypes={nodeTypes}
+          onNodesChange={handleNodesChange}
+          onEdgesChange={handleEdgesChange}
+          onConnect={handleConnect}
+          onNodeClick={handleNodeClick}
+          onDrop={handleDrop}
+          onDragOver={(event: React.DragEvent<HTMLDivElement>) => event.preventDefault()}
+          snapToGrid={canvasSettings.snapToGrid}
+          snapGrid={[canvasSettings.gridSize, canvasSettings.gridSize]}
+          defaultViewport={{ x: 0, y: 0, zoom: 1 }}
+          fitView
+          deleteKeyCode={['Backspace', 'Delete']}
+          multiSelectionKeyCode={['Control', 'Meta']}
+          selectionKeyCode={null}
+          className="rounded-lg"
+        >
+          <Background
+            variant={BackgroundVariant.Dots}
+            gap={canvasSettings.gridSize}
+            size={1}
+            color="#e2e8f0"
+            className="dark:bg-gray-900"
+          />
+          <MiniMap
+            nodeStrokeWidth={3}
+            zoomable
+            pannable
+            className="bg-white dark:bg-gray-800 rounded-md shadow-md border border-gray-200 dark:border-gray-700"
+            style={{ opacity: 0.9 }}
+          />
+          <Controls
+            className="bg-white dark:bg-gray-800 rounded-md shadow-md border border-gray-200 dark:border-gray-700"
+            style={{ opacity: 0.9 }}
+          />
+        </SafeReactFlow>
+      </motion.div>
       
-      {/* Zoom Controls */}
-      <div className="absolute bottom-4 left-4 flex flex-col gap-2">
+      {/* Centered Title */}
+      <div className="absolute top-2 left-1/2 transform -translate-x-1/2 z-10">
+        <div className="bg-white/70 dark:bg-gray-800/70 backdrop-blur-sm px-3 py-1 rounded-full shadow-sm text-center">
+          <span className="text-sm font-medium text-gray-700 dark:text-gray-200">Pipeline Canvas</span>
+        </div>
+      </div>
+      
+      {/* Zoom Controls - Now at bottom right for better UX */}
+      <div className="absolute bottom-4 right-4 flex gap-2">
         <motion.button
-          whileHover={{ scale: 1.1 }}
-          whileTap={{ scale: 0.9 }}
+          whileHover={{ scale: 1.05 }}
+          whileTap={{ scale: 0.95 }}
           onClick={handleZoomIn}
-          className="p-2 bg-white dark:bg-gray-800 rounded-full shadow-md text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+          className="p-2 bg-white/90 dark:bg-gray-800/90 backdrop-blur-sm rounded-full shadow-md text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
           aria-label="Zoom in"
         >
-          <FiZoomIn className="w-5 h-5" />
+          <FiZoomIn className="w-4 h-4" />
         </motion.button>
         <motion.button
-          whileHover={{ scale: 1.1 }}
-          whileTap={{ scale: 0.9 }}
+          whileHover={{ scale: 1.05 }}
+          whileTap={{ scale: 0.95 }}
           onClick={handleZoomOut}
-          className="p-2 bg-white dark:bg-gray-800 rounded-full shadow-md text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+          className="p-2 bg-white/90 dark:bg-gray-800/90 backdrop-blur-sm rounded-full shadow-md text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
           aria-label="Zoom out"
         >
-          <FiZoomOut className="w-5 h-5" />
+          <FiZoomOut className="w-4 h-4" />
         </motion.button>
         <motion.button
-          whileHover={{ scale: 1.1 }}
-          whileTap={{ scale: 0.9 }}
+          whileHover={{ scale: 1.05 }}
+          whileTap={{ scale: 0.95 }}
           onClick={handleZoomReset}
-          className="p-2 bg-white dark:bg-gray-800 rounded-full shadow-md text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+          className="p-2 bg-white/90 dark:bg-gray-800/90 backdrop-blur-sm rounded-full shadow-md text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
           aria-label="Reset zoom"
         >
-          <FiMaximize className="w-5 h-5" />
+          <FiMaximize className="w-4 h-4" />
         </motion.button>
       </div>
       

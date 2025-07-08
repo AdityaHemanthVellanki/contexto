@@ -1,8 +1,7 @@
-import { runEmbedder } from './embeddings';
-import { runSummarizer } from './summarizer';
-import { runRAGQuery } from './ragQuery';
-import { runRefineAnswer } from './refineAnswer';
-import { TokenUsage } from './usage';
+import { runEmbedder, runSummarizer, runRAGQuery, runRefineAnswer, UsageReport as OpenAIUsage } from '@/lib/handlers/openai';
+import { logUsage, aggregateUsage } from '@/lib/usage/logUsage';
+import { db } from '@/lib/firebase';
+import { collection, addDoc, serverTimestamp, doc, updateDoc } from 'firebase/firestore';
 
 // Define the Graph and Node types for TypeScript
 export interface Node {
@@ -29,11 +28,20 @@ export interface Graph {
 export interface NodeUsage {
   promptTokens: number;
   completionTokens: number;
+  totalTokens?: number;
 }
 
 export interface UsageReport {
   [nodeId: string]: NodeUsage;
   total: NodeUsage;
+}
+
+// Document with embedding for vector storage
+export interface EmbeddedDocument {
+  id: string;
+  text: string;
+  embedding: number[];
+  metadata?: Record<string, any>;
 }
 
 /**
@@ -127,6 +135,9 @@ export async function executePipeline(graph: Graph, prompt: string, userId: stri
     total: { promptTokens: 0, completionTokens: 0 }
   };
   
+  // Store OpenAI usage for tracking and logging
+  const openAIUsage: OpenAIUsage[] = [];
+  
   try {
     // Topologically sort nodes
     const sortedNodes = topologicalSort(graph.nodes, graph.edges);
@@ -141,114 +152,106 @@ export async function executePipeline(graph: Graph, prompt: string, userId: stri
       const inputData = inputNodes.map(nodeId => nodeResults[nodeId]).filter(Boolean);
       
       // Initialize usage tracking for this node
-      usageReport[id] = { promptTokens: 0, completionTokens: 0 };
+      usageReport[id] = {
+        promptTokens: 0,
+        completionTokens: 0
+      };
       
-      // Execute based on node type
+      // Process based on node type
       switch (type) {
         case 'dataSource': {
-          // Data source node - currently we only support text input
-          if (data.settings.sourceType === 'text') {
-            nodeResults[id] = data.settings.text || prompt;
-          } else if (data.settings.sourceType === 'prompt') {
-            // Use the user prompt directly
+          // For data source, use the provided content
+          const sourceType = data.settings.sourceType || 'text';
+          
+          if (sourceType === 'text') {
+            nodeResults[id] = data.settings.content || '';
+          } else if (sourceType === 'prompt') {
             nodeResults[id] = prompt;
           } else {
-            throw new Error(`Unsupported data source type: ${data.settings.sourceType}`);
+            throw new Error(`Unsupported data source type: ${sourceType}`);
           }
           break;
         }
-          
+        
         case 'chunker': {
-          // Split text into chunks based on settings
-          const inputText = inputData[0] || '';
-          
-          if (!inputText) {
+          // For chunker, split the input text into chunks
+          const text = inputData[0];
+          if (!text) {
             throw new Error('Chunker received empty input');
           }
           
           const chunkSize = data.settings.chunkSize || 1000;
-          const chunkOverlap = data.settings.chunkOverlap || 0;
+          const overlap = data.settings.overlap || 0;
           
-          if (chunkSize <= 0) {
-            throw new Error('Chunk size must be greater than 0');
-          }
-          
-          if (chunkOverlap >= chunkSize) {
-            throw new Error('Chunk overlap must be less than chunk size');
-          }
-          
-          // Create chunks with overlap
-          const chunks: string[] = [];
-          const text = String(inputText);
-          const step = chunkSize - chunkOverlap;
-          
-          for (let i = 0; i < text.length; i += step) {
-            chunks.push(text.substring(i, i + chunkSize));
-          }
-          
-          if (chunks.length === 0) {
-            throw new Error('Chunking resulted in 0 chunks');
+          // Split text into chunks
+          const chunks = [];
+          if (typeof text === 'string') {
+            // Simple chunking by character count for prototype
+            for (let i = 0; i < text.length; i += chunkSize - overlap) {
+              chunks.push(text.substring(i, i + chunkSize));
+            }
+          } else {
+            throw new Error('Chunker expects string input');
           }
           
           nodeResults[id] = chunks;
           break;
         }
-          
+        
         case 'embedder': {
-          // Get chunks from previous node
+          // For embedder, convert text chunks into embeddings
           const chunks = inputData[0];
-          
-          if (!chunks || !Array.isArray(chunks) || chunks.length === 0) {
-            throw new Error('Embedder requires text chunks as input');
+          if (!chunks || !Array.isArray(chunks)) {
+            throw new Error('Embedder requires chunks as input');
           }
           
-          // Generate embeddings through Azure OpenAI
-          const embeddings = await runEmbedder(chunks, userId);
+          // Call the Azure OpenAI embeddings API
+          const { embeddings, usage } = await runEmbedder(chunks, {
+            user: userId // Pass user ID for tracking
+          });
           
-          if (!embeddings || embeddings.length === 0) {
-            throw new Error('Embedding generation failed to return results');
-          }
-          
-          nodeResults[id] = {
-            chunks,
-            embeddings
+          // Track usage
+          openAIUsage.push(usage);
+          usageReport[id] = {
+            promptTokens: usage.promptTokens,
+            completionTokens: usage.completionTokens,
+            totalTokens: usage.totalTokens
           };
           
-          // Track token usage
-          // Note: Real usage is tracked within runEmbedder and logged to Firestore
-          const tokenEstimate = chunks.reduce((acc, chunk) => acc + chunk.length, 0) / 4;
-          usageReport[id].promptTokens = tokenEstimate;
-          usageReport.total.promptTokens += tokenEstimate;
+          // Create documents with text and embeddings
+          const documents: EmbeddedDocument[] = chunks.map((chunk, i) => ({
+            id: `doc_${i}`,
+            text: chunk,
+            embedding: embeddings[i]
+          }));
+          
+          nodeResults[id] = documents;
           break;
         }
-          
+        
         case 'indexer': {
-          // Get chunks and embeddings
-          const { chunks, embeddings } = inputData[0] || {};
-          
-          if (!chunks || !embeddings || !Array.isArray(chunks) || !Array.isArray(embeddings)) {
-            throw new Error('Indexer requires chunks and embeddings as input');
+          // For indexer, organize documents for retrieval
+          const documents = inputData[0];
+          if (!documents || !Array.isArray(documents)) {
+            throw new Error('Indexer requires documents as input');
           }
           
-          if (chunks.length !== embeddings.length) {
-            throw new Error('Number of chunks and embeddings must match');
-          }
-          
-          // Create an in-memory vector index
-          const index = chunks.map((chunk, i) => ({
-            text: chunk,
-            embedding: embeddings[i],
+          // In production, this might insert into a vector database
+          // For prototype, we just pass through the documents
+          const index = documents.map((doc: EmbeddedDocument, i: number) => ({
+            id: doc.id || `doc_${i}`,
+            text: doc.text,
+            embedding: doc.embedding
           }));
           
           nodeResults[id] = index;
           break;
         }
-          
+        
         case 'retriever': {
-          // Get the index and query
+          // For retriever, perform semantic search
           const index = inputData[0];
-          
-          if (!index || !Array.isArray(index) || index.length === 0) {
+          if (!index || !Array.isArray(index)) {
             throw new Error('Retriever requires an index as input');
           }
           
@@ -256,14 +259,14 @@ export async function executePipeline(graph: Graph, prompt: string, userId: stri
           const queryText = prompt;
           const topK = data.settings.topK || 3;
           
-          // In production, this would perform semantic search
+          // In production, this would use embedding to perform semantic search
           // For now, we'll return the first topK documents as a simplified implementation
-          const retrievedDocs = index.slice(0, topK).map(item => item.text);
+          const retrievedDocs = index.slice(0, topK).map((item: EmbeddedDocument) => item.text);
           
           nodeResults[id] = retrievedDocs;
           break;
         }
-          
+        
         case 'output': {
           // Process output based on format setting
           const inputText = inputData[0];
@@ -273,45 +276,76 @@ export async function executePipeline(graph: Graph, prompt: string, userId: stri
             throw new Error('Output node received empty input');
           }
           
-          let result;
+          let result: any;
           
           switch (outputFormat) {
             case 'summary': {
               // Generate summary from input text
               const text = Array.isArray(inputText) ? inputText.join('\n\n') : inputText;
-              result = await runSummarizer(text, userId);
               
-              // Update usage from the summary operation
+              // Call the Azure OpenAI summarizer
+              const summarizerResult = await runSummarizer(text, {
+                user: userId,
+                maxTokens: data.settings.maxTokens || 500,
+                temperature: data.settings.temperature || 0.3
+              });
+              
+              // Track usage
+              openAIUsage.push(summarizerResult.usage);
               usageReport[id] = {
-                promptTokens: text.length / 4, // Estimate
-                completionTokens: (result?.length || 0) / 4 // Estimate
+                promptTokens: summarizerResult.usage.promptTokens,
+                completionTokens: summarizerResult.usage.completionTokens,
+                totalTokens: summarizerResult.usage.totalTokens
               };
+              
+              result = summarizerResult.summary;
               break;
             }
             
             case 'rag': {
               // Run RAG query with context and prompt
               const context = Array.isArray(inputText) ? inputText : [inputText];
-              result = await runRAGQuery(context, prompt, userId);
               
-              // Update usage from the RAG operation
+              // Call the Azure OpenAI RAG query
+              const ragResult = await runRAGQuery(prompt, {
+                context,
+                user: userId,
+                maxTokens: data.settings.maxTokens || 1000,
+                temperature: data.settings.temperature || 0.7
+              });
+              
+              // Track usage
+              openAIUsage.push(ragResult.usage);
               usageReport[id] = {
-                promptTokens: context.join('\n\n').length / 4 + prompt.length / 4, // Estimate
-                completionTokens: (result?.length || 0) / 4 // Estimate
+                promptTokens: ragResult.usage.promptTokens,
+                completionTokens: ragResult.usage.completionTokens,
+                totalTokens: ragResult.usage.totalTokens
               };
+              
+              result = ragResult.answer;
               break;
             }
             
             case 'refine': {
               // Run refine operation on initial response
-              const text = Array.isArray(inputText) ? inputText.join('\n\n') : inputText;
-              result = await runRefineAnswer(text, prompt, userId);
+              const initialAnswer = Array.isArray(inputText) ? inputText.join('\n\n') : inputText;
               
-              // Update usage from the refine operation
+              // Call the Azure OpenAI refine answer
+              const refineResult = await runRefineAnswer(prompt, initialAnswer, {
+                user: userId,
+                maxTokens: data.settings.maxTokens || 1500,
+                temperature: data.settings.temperature || 0.5
+              });
+              
+              // Track usage
+              openAIUsage.push(refineResult.usage);
               usageReport[id] = {
-                promptTokens: text.length / 4 + prompt.length / 4, // Estimate
-                completionTokens: (result?.length || 0) / 4 // Estimate
+                promptTokens: refineResult.usage.promptTokens,
+                completionTokens: refineResult.usage.completionTokens,
+                totalTokens: refineResult.usage.totalTokens
               };
+              
+              result = refineResult.refinedAnswer;
               break;
             }
             
@@ -320,16 +354,46 @@ export async function executePipeline(graph: Graph, prompt: string, userId: stri
           }
           
           nodeResults[id] = result;
-          
-          // Add to total usage
-          usageReport.total.promptTokens += usageReport[id].promptTokens;
-          usageReport.total.completionTokens += usageReport[id].completionTokens;
           break;
         }
         
         default:
           throw new Error(`Unsupported node type: ${type}`);
       }
+      
+      // Add to total usage for this node
+      if (usageReport[id].promptTokens) {
+        usageReport.total.promptTokens += usageReport[id].promptTokens;
+      }
+      if (usageReport[id].completionTokens) {
+        usageReport.total.completionTokens += usageReport[id].completionTokens;
+      }
+    }
+    
+    // Log aggregated usage to Firestore
+    if (openAIUsage.length > 0) {
+      try {
+        const aggregatedUsage = aggregateUsage(openAIUsage);
+        await logUsage(userId, 'pipeline', aggregatedUsage);
+      } catch (logError) {
+        console.error('Failed to log usage:', logError);
+        // Continue execution despite logging error
+      }
+    }
+    
+    // Store pipeline execution result in Firestore
+    try {
+      await addDoc(collection(db, 'pipelineExecutions'), {
+        userId,
+        pipelineId: graph.nodes.find(n => n.type === 'output')?.id || 'unknown',
+        promptTokens: usageReport.total.promptTokens,
+        completionTokens: usageReport.total.completionTokens,
+        totalTokens: usageReport.total.promptTokens + usageReport.total.completionTokens,
+        timestamp: serverTimestamp()
+      });
+    } catch (storeError) {
+      console.error('Failed to store pipeline execution:', storeError);
+      // Continue execution despite storage error
     }
     
     // Return the result from the output nodes and the usage report

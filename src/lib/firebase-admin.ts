@@ -1,24 +1,39 @@
 import * as admin from 'firebase-admin';
+import { cert } from 'firebase-admin/app';
+import { configureFirebaseAdminEmulators } from './firebase-emulator';
 
 /**
  * Initialize Firebase Admin SDK
  * Uses environment variables for configuration
  */
 export function getFirebaseAdmin() {
+  // Configure emulators if needed
+  configureFirebaseAdminEmulators();
+  
   if (!admin.apps.length) {
     try {
-      // Initialize with service account if provided, otherwise use default credentials
-      // In production, ensure FIREBASE_SERVICE_ACCOUNT environment variable is properly set
-      const serviceAccount = process.env.FIREBASE_SERVICE_ACCOUNT 
-        ? JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT)
-        : undefined;
+      // For local development, use the Firebase project ID from environment variables
+      const projectId = process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID || 'contexto-app';
       
-      admin.initializeApp({
-        credential: serviceAccount 
-          ? admin.credential.cert(serviceAccount) 
-          : admin.credential.applicationDefault(),
-        databaseURL: process.env.FIREBASE_DATABASE_URL
-      });
+      // Check if we have a service account JSON
+      if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+        try {
+          const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+          admin.initializeApp({
+            credential: admin.credential.cert(serviceAccount),
+            projectId: projectId,
+            databaseURL: process.env.FIREBASE_DATABASE_URL
+          });
+        } catch (e) {
+          console.error('Error parsing service account JSON:', e);
+          throw new Error('Invalid service account JSON');
+        }
+      } else {
+        // For local development without service account
+        admin.initializeApp({
+          projectId: projectId
+        });
+      }
       
       console.log('Firebase Admin initialized successfully');
     } catch (error) {

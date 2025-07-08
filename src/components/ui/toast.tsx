@@ -1,9 +1,31 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, createContext, useContext, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { FiXCircle, FiCheck, FiAlertTriangle } from 'react-icons/fi';
-import { useToast, Toast } from '@/hooks/useToast';
+import React from 'react';
+import { v4 as uuidv4 } from 'uuid';
+
+export type ToastVariant = 'default' | 'destructive' | 'success';
+
+export interface Toast {
+  id: string;
+  title: string;
+  description?: string;
+  variant?: ToastVariant;
+  duration?: number; // Duration in ms
+}
+
+export type ToastOptions = Omit<Toast, 'id'>
+
+interface ToastContextType {
+  toasts: Toast[];
+  toast: (options: ToastOptions) => string;
+  dismiss: (id: string) => void;
+  dismissAll: () => void;
+}
+
+const ToastContext = createContext<ToastContextType | undefined>(undefined);
 
 interface ToastProps {
   toast: Toast;
@@ -88,4 +110,38 @@ export function ToastContainer() {
       </AnimatePresence>
     </div>
   );
+}
+
+// Create a ToastProvider component that wraps the app with toast functionality
+export function ToastProvider({ children }: { children: React.ReactNode }) {
+  const [toasts, setToasts] = useState<Toast[]>([]);
+
+  const toast = (options: ToastOptions) => {
+    const id = uuidv4();
+    setToasts((prev) => [...prev, { id, ...options }]);
+    return id;
+  };
+
+  const dismiss = (id: string) => {
+    setToasts((prev) => prev.filter((toast) => toast.id !== id));
+  };
+
+  const dismissAll = () => {
+    setToasts([]);
+  };
+
+  return (
+    <ToastContext.Provider value={{ toasts, toast, dismiss, dismissAll }}>
+      {children}
+      <ToastContainer />
+    </ToastContext.Provider>
+  );
+}
+
+export function useToast() {
+  const context = useContext(ToastContext);
+  if (context === undefined) {
+    throw new Error('useToast must be used within a ToastProvider');
+  }
+  return context;
 }

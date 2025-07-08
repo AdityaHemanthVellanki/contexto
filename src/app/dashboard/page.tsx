@@ -1,69 +1,266 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import SplitPane from 'react-split-pane';
+import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '@/context/AuthContext';
 import CanvasArea from '@/components/canvas/CanvasArea';
 import RightPanel from '@/components/panels/RightPanel';
 import { useCanvasStore } from '@/store/useCanvasStore';
 import { useChatStore } from '@/store/useChatStore';
+import { DashboardSkeleton } from '@/components/ui/SkeletonLoader';
+import ChatInterface from '@/components/chat/ChatInterface';
+import DataImportModal from '@/components/data/DataImportModal';
+import FileList from '@/components/data/FileList';
+import ExportList from '@/components/data/ExportList';
+import ViewToggle from '@/components/layout/ViewToggle';
+import { ToastContainer, useToast } from '@/components/ui/toast';
+import { collection, query, where, orderBy, getDocs } from 'firebase/firestore';
+import { FiUpload, FiFile, FiClock, FiDownload, FiPackage } from 'react-icons/fi';
+
+// Import Firebase client
+import { db } from '@/lib/firebase-client';
+
+// Define animations
+const fadeInVariants = {
+  hidden: { opacity: 0 },
+  visible: { opacity: 1, transition: { duration: 0.5 } },
+};
 
 export default function DashboardPage() {
-  const { user, isLoading } = useAuth();
+  const { user, isLoading: authLoading } = useAuth();
   const router = useRouter();
   const { initializeCanvas } = useCanvasStore();
   const { setActiveTab } = useChatStore();
+  const { toast: addToast } = useToast();
+  
+  // State for the chat-centric layout
+  const [activeView, setActiveView] = useState<'chat' | 'advanced'>('chat');
+  const [importedData, setImportedData] = useState(false);
+  const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+  const [pipelineCount, setPipelineCount] = useState(0);
+  
+  // State for data management
+  const [activeFileId, setActiveFileId] = useState<string | undefined>();
+  const [isLoading, setIsLoading] = useState(true);
+  const [refreshTrigger, setRefreshTrigger] = useState(0);
+  const [activeDataTab, setActiveDataTab] = useState<'files' | 'exports'>('files');
+  
+  // Set isLoading to false after initialization
+  useEffect(() => {
+    // Set a short timeout to ensure initial rendering is complete
+    const timer = setTimeout(() => {
+      setIsLoading(false);
+    }, 1000);
+    
+    return () => clearTimeout(timer);
+  }, []);
 
   // Initialize canvas when component loads
   useEffect(() => {
-    if (user) {
-      initializeCanvas();
-    }
-  }, [user, initializeCanvas]);
-
-  // Redirect to sign-in if not authenticated
+    initializeCanvas();
+    setActiveTab('nodePalette'); // Using valid tab value
+  }, [initializeCanvas, setActiveTab]);
+  
+  // Check auth and redirect if not authenticated
   useEffect(() => {
-    if (!isLoading && !user) {
-      router.push('/');
+    if (!authLoading && !user) {
+      router.push('/signin');
     }
-  }, [user, isLoading, router]);
+  }, [user, authLoading, router]);
+  
+  // Automatic redirect if not authenticated
+  useEffect(() => {
+    if (!authLoading && !user) {
+      router.push('/signin');
+    }
+  }, [user, authLoading, router]);
+  
+  // Handle view toggle
+  const handleViewChange = (view: 'chat' | 'advanced') => {
+    setActiveView(view);
+  };
+  
+  // Handle data import
+  const handleOpenImportModal = () => {
+    setIsImportModalOpen(true);
+  };
+  
+  const handleImportSuccess = (fileId?: string) => {
+    if (!fileId) return;
+    
+    // Set the newly imported file as active
+    setActiveFileId(fileId);
+    setImportedData(true);
+    
+    // Trigger refresh of file list
+    setRefreshTrigger(prev => prev + 1);
+    
+    // Show success toast
+    addToast({
+      title: 'Import Successful',
+      description: 'Your file is now ready for use',
+      variant: 'success',
+    });
+  };
 
-  // Show loading state
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center h-screen">
-        <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500"></div>
-      </div>
-    );
+  // Handle file selection
+  const handleFileSelect = (fileId: string) => {
+    setActiveFileId(fileId);
+  };
+
+  // Show loading state with skeleton
+  if (authLoading || isLoading) {
+    return <DashboardSkeleton />;
   }
 
-  // If authenticated, show the split-pane layout
-  if (user) {
-    return (
-      <div className="h-[calc(100vh-64px)] flex">
-        <div className="h-full">
-          {/* @ts-ignore - SplitPane has typing issues with children */}
-          <SplitPane
-            split="vertical"
-            minSize={300}
-            maxSize={-300}
-            defaultSize="60%"
-            style={{ position: 'relative' }}
-            pane1Style={{ height: '100%' }}
-            pane2Style={{ height: '100%' }}
-          >
-            <div className="h-full">
-              <CanvasArea />
-            </div>
-            <div className="h-full">
-              <RightPanel />
-            </div>
-          </SplitPane>
+  // If authenticated, show the dashboard layout based on active view
+  return (
+    <div className="min-h-screen flex flex-col p-4 bg-gray-50 dark:bg-gray-900">
+      <motion.div 
+        className="w-full flex-1 flex flex-col"
+        initial="hidden"
+        animate="visible"
+        variants={fadeInVariants}
+      >
+        {/* View Toggle in TopRight */}
+        <div className="fixed top-20 right-4 z-40">
+          <ViewToggle 
+            activeView={activeView} 
+            onViewChange={handleViewChange} 
+            className="shadow-md" 
+          />
         </div>
-      </div>
-    );
-  }
-
-  return null;
+        
+        {/* Toast Container */}
+        <ToastContainer />
+        
+        {/* Data Import Modal */}
+        <DataImportModal 
+          isOpen={isImportModalOpen} 
+          onClose={() => setIsImportModalOpen(false)} 
+          onImportSuccess={handleImportSuccess} 
+        />
+        
+        <AnimatePresence mode="wait">
+          {/* Chat View */}
+          {activeView === 'chat' && (
+            <motion.div 
+              key="chat-view"
+              initial="hidden"
+              animate="visible"
+              variants={fadeInVariants}
+              className="flex-1"
+            >
+              <div className="max-w-5xl mx-auto">
+                {/* Data Management Panel */}
+                <div className="mb-4 bg-gray-50 dark:bg-gray-800 rounded-lg p-3 border border-gray-200 dark:border-gray-700">
+                  <div className="flex justify-between items-center mb-3">
+                    <div className="flex space-x-2">
+                      <button
+                        onClick={() => setActiveDataTab('files')}
+                        className={`text-sm font-medium flex items-center px-3 py-1.5 rounded-md ${activeDataTab === 'files' 
+                          ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300' 
+                          : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300'}`}
+                      >
+                        <FiFile className="mr-1.5" /> Files
+                      </button>
+                      <button
+                        onClick={() => setActiveDataTab('exports')}
+                        className={`text-sm font-medium flex items-center px-3 py-1.5 rounded-md ${activeDataTab === 'exports' 
+                          ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300' 
+                          : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300'}`}
+                      >
+                        <FiPackage className="mr-1.5" /> Exports
+                      </button>
+                    </div>
+                    
+                    <button
+                      onClick={handleOpenImportModal}
+                      className="text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 text-xs flex items-center"
+                    >
+                      <FiUpload className="mr-1" /> Import New
+                    </button>
+                  </div>
+                  
+                  <AnimatePresence mode="wait">
+                    {activeDataTab === 'files' ? (
+                      <motion.div
+                        key="files-tab"
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        transition={{ duration: 0.2 }}
+                      >
+                        <FileList
+                          onSelectFile={handleFileSelect}
+                          activeFileId={activeFileId}
+                          refreshTrigger={refreshTrigger}
+                        />
+                      </motion.div>
+                    ) : (
+                      <motion.div
+                        key="exports-tab"
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        transition={{ duration: 0.2 }}
+                      >
+                        <ExportList refreshTrigger={refreshTrigger} />
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+                
+                <ChatInterface 
+                  onShowAdvancedView={() => setActiveView('advanced')} 
+                  importedData={importedData}
+                  onImportData={handleOpenImportModal}
+                  activeFileId={activeFileId}
+                />
+              </div>
+            </motion.div>
+          )}
+          
+          {/* Advanced View */}
+          {activeView === 'advanced' && (
+            <motion.div 
+              key="advanced-view"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              transition={{ duration: 0.3 }}
+              className="flex-1"
+            >
+              <div className="max-w-6xl mx-auto">
+                {/* Header */}
+                <div className="text-center mb-6">
+                  <h1 className="text-2xl font-bold text-gray-800 dark:text-gray-200">Pipeline Builder</h1>
+                  <p className="text-gray-500 dark:text-gray-400">Design your AI context pipelines visually</p>
+                </div>
+                
+                {/* Main Content Area */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+                  {/* Left Column */}
+                  <div className="md:col-span-2">
+                    <CanvasArea />
+                  </div>
+                  
+                  {/* Right Column */}
+                  <div className="md:col-span-1">
+                    <RightPanel />
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+        
+        {/* Footer */}
+        <div className="mt-auto pt-8 text-center text-xs text-gray-500 dark:text-gray-400">
+          <p>&copy; {new Date().getFullYear()} Contexto. All rights reserved.</p>
+        </div>
+      </motion.div>
+    </div>
+  );
 }

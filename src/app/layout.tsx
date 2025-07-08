@@ -1,8 +1,11 @@
 import type { Metadata } from "next";
-import { Inter, Poppins } from "next/font/google";
+import { Inter, Poppins } from 'next/font/google';
+import { ThemeProvider } from '@/context/ThemeContext';
+import { AuthProvider } from '@/context/AuthContext';
+import AppShell from '@/components/layout/AppShell';
+import { ToastProvider } from '@/components/ui/toast';
+import ApiErrorHandler from '@/components/layout/ApiErrorHandler';
 import "./globals.css";
-import { ThemeProvider } from "@/context/ThemeContext";
-import { AuthProvider } from "@/context/AuthContext";
 
 const inter = Inter({
   subsets: ["latin"],
@@ -28,10 +31,28 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" suppressHydrationWarning>
-      <body className={`${inter.variable} ${poppins.variable} font-sans antialiased dark:bg-gray-900 dark:text-white`}>
+      <head>
+        <script dangerouslySetInnerHTML={{
+          __html: `
+            // Prevent Phantom wallet extension from overriding window.solana
+            Object.defineProperty(window, 'solana', {
+              value: undefined,
+              configurable: false,
+              writable: false
+            });
+          `
+        }} />
+      </head>
+      <body className={`${inter.variable} ${poppins.variable} font-sans antialiased bg-gray-50 dark:bg-gray-900 dark:text-white`}>
         <ThemeProvider>
           <AuthProvider>
-            {children}
+            <ToastProvider>
+              <ApiErrorHandler>
+                <AppShell>
+                  {children}
+                </AppShell>
+              </ApiErrorHandler>
+            </ToastProvider>
           </AuthProvider>
         </ThemeProvider>
       </body>
