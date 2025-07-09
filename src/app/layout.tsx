@@ -5,7 +5,13 @@ import { AuthProvider } from '@/context/AuthContext';
 import AppShell from '@/components/layout/AppShell';
 import { ToastProvider } from '@/components/ui/toast';
 import ApiErrorHandler from '@/components/layout/ApiErrorHandler';
+import { initAuthListeners } from '@/lib/auth-interceptor';
 import "./globals.css";
+
+// Initialize auth listeners as early as possible
+if (typeof window !== 'undefined') {
+  initAuthListeners();
+}
 
 const inter = Inter({
   subsets: ["latin"],

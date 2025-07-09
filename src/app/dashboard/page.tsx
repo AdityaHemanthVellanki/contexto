@@ -62,17 +62,54 @@ export default function DashboardPage() {
     setActiveTab('nodePalette'); // Using valid tab value
   }, [initializeCanvas, setActiveTab]);
   
-  // Check auth and redirect if not authenticated
+  // Authentication and token refresh mechanism
   useEffect(() => {
-    if (!authLoading && !user) {
-      router.push('/signin');
+    // If still loading auth state, don't do anything yet
+    if (authLoading) {
+      console.log('Auth state is still loading, waiting...');
+      return;
     }
-  }, [user, authLoading, router]);
-  
-  // Automatic redirect if not authenticated
-  useEffect(() => {
-    if (!authLoading && !user) {
+
+    // Once auth loading is complete, check if user exists
+    if (!user) {
+      console.log('No user found after auth loaded, redirecting to signin');
       router.push('/signin');
+      return;
+    }
+    
+    // If user is authenticated, implement token refresh mechanism
+    if (user) {
+      console.log('User authenticated in dashboard, setting up token refresh');
+      
+      // Immediate token refresh on page load to ensure fresh token
+      (async () => {
+        try {
+          const token = await user.getIdToken(true);
+          console.log('Token refreshed successfully on dashboard load');
+          
+          // Store token in sessionStorage for API calls
+          sessionStorage.setItem('authToken', token);
+        } catch (error) {
+          console.error('Failed to refresh token on dashboard load:', error);
+        }
+      })();
+      
+      // Set up periodic token refresh (every 10 minutes)
+      const tokenRefreshInterval = setInterval(async () => {
+        try {
+          if (user) {
+            const token = await user.getIdToken(true);
+            console.log('Periodic token refresh successful');
+            sessionStorage.setItem('authToken', token);
+          }
+        } catch (error) {
+          console.error('Periodic token refresh failed:', error);
+        }
+      }, 10 * 60 * 1000); // 10 minutes
+      
+      return () => {
+        clearInterval(tokenRefreshInterval);
+      };
     }
   }, [user, authLoading, router]);
   

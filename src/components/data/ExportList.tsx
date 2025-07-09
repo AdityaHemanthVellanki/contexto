@@ -1,7 +1,10 @@
-import { useEffect, useState, useRef, useCallback } from 'react';
-import { FiDownload, FiPackage, FiLoader, FiRefreshCw, FiLogIn } from 'react-icons/fi';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { FiDownload, FiLoader, FiRefreshCw, FiAlertCircle, FiLogIn, FiPackage } from 'react-icons/fi';
 import { useAuth } from '@/context/AuthContext';
+import { fetchWithAuth } from '@/lib/auth-interceptor';
+import { auth } from '@/utils/firebase';
 import { useToast } from '@/components/ui/toast';
+import { Button } from '@/components/ui/button';
 import { useRouter } from 'next/navigation';
 
 interface ExportItem {
@@ -45,7 +48,7 @@ export default function ExportList({ refreshTrigger = 0 }: ExportListProps) {
   }, []);
 
   // Debounced fetch function with exponential backoff for retries
-  const fetchExports = useCallback(async (isRetry = false) => {
+  const fetchExports = useCallback(async (isRetry = false, retryCount = 0) => {
     if (!user) return;
     
     // Rate limiting protection
@@ -77,16 +80,12 @@ export default function ExportList({ refreshTrigger = 0 }: ExportListProps) {
     }
 
     try {
-      // Get the user's auth token
-      const token = await user.getIdToken();
-      
-      // Fetch the exports from the API with a timeout
+      // Use our authenticated fetch utility with automatic token refresh
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
       
-      const response = await fetch('/api/exports', {
+      const response = await fetchWithAuth('/api/exports', {
         headers: {
-          'Authorization': `Bearer ${token}`,
           'Cache-Control': 'no-cache',
           'Pragma': 'no-cache'
         },
@@ -98,8 +97,37 @@ export default function ExportList({ refreshTrigger = 0 }: ExportListProps) {
       if (!response.ok) {
         // If response is 401/403, it's an auth issue
         if (response.status === 401 || response.status === 403) {
+          // Try to get error details from response
+          const errorData = await response.json().catch(() => ({}));
+          console.log('Auth error details in ExportList:', errorData);
+          
+          // If token expired, try refreshing token and retry once
+          if (errorData?.code === 'TOKEN_EXPIRED' || errorData?.message?.includes('expired')) {
+            if (retryCount < 2) {
+              console.log('Token expired in ExportList, forcing refresh and retrying...');
+              
+              // Force token refresh
+              try {
+                const user = auth.currentUser;
+                if (user) {
+                  await user.getIdToken(true);
+                  console.log('Token refreshed successfully in ExportList, retrying fetch');
+                  
+                  // Wait a moment then retry
+                  setTimeout(() => {
+                    fetchExports(true, retryCount + 1);
+                  }, 1000);
+                  return;
+                }
+              } catch (refreshError) {
+                console.error('Failed to refresh token after expiry in ExportList:', refreshError);
+              }
+            }
+          }
+          
+          // If we got here, we couldn't refresh the token or retries failed
           setIsAuthError(true);
-          throw new Error('Authentication error. Please sign in again.');
+          throw new Error('Session expired. Please reload the page or sign in again.');
         }
         
         // If rate limited (429), implement exponential backoff
@@ -188,19 +216,11 @@ export default function ExportList({ refreshTrigger = 0 }: ExportListProps) {
         return;
       }
       
-      // Get the user's auth token
-      const token = await user.getIdToken();
-      
-      // Fetch the export content with a timeout
+      // Use our authenticated fetch utility with automatic token refresh
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout for larger files
       
-      const response = await fetch(`/api/export/${exportId}`, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Cache-Control': 'no-cache',
-          'Pragma': 'no-cache'
-        },
+      const response = await fetchWithAuth(`/api/export/${exportId}`, {
         signal: controller.signal
       });
       
