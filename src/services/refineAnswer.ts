@@ -46,6 +46,11 @@ export async function runRefineAnswer(draft: string, instructions: string, userI
       });
     }
 
+    // Ensure client is initialized
+    if (!client) {
+      throw new Error('Azure OpenAI client is not initialized');
+    }
+
     // Call Azure OpenAI chat completions API
     const response = await client.chat.completions.create({
       model: modelMapping.turbo as string, // Using turbo instead of refine as there's no refine in Azure OpenAI

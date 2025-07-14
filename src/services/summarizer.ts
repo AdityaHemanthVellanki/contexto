@@ -20,6 +20,11 @@ export async function runSummarizer(text: string, userId: string): Promise<strin
   }
 
   try {
+    // Ensure client is initialized
+    if (!client) {
+      throw new Error('Azure OpenAI client is not initialized');
+    }
+    
     // Call Azure OpenAI chat completions API
     const response = await client.chat.completions.create({
       model: modelMapping.turbo as string,

@@ -17,33 +17,12 @@ export async function authenticateRequest(request: NextRequest): Promise<{
     // Get auth header - with various fallback approaches
     const authHeader = request.headers.get('authorization') || request.headers.get('Authorization');
     
-    // Development bypass for easy testing - ONLY for non-production environments
-    const isDev = process.env.NODE_ENV === 'development';
-    if (isDev && process.env.NEXT_PUBLIC_LOCAL_DEV_AUTH_BYPASS === 'true') {
-      console.log('DEV MODE: Using development auth bypass');
-      return {
-        authenticated: true,
-        userId: 'dev-user-123',
-        token: 'dev-token'
-      };
-    }
-    
-    // If no auth header, but we're in development, we can use a dev token
-    if ((!authHeader || !authHeader.startsWith('Bearer ')) && isDev) {
-      console.log('DEV MODE: Missing auth header, using development credentials');
-      return {
-        authenticated: true,
-        userId: 'dev-user-123',
-        token: 'dev-token'
-      };
-    }
-    
-    // For production, enforce proper auth header
+    // Production-ready authentication requires proper headers
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
       return {
         authenticated: false,
         response: NextResponse.json(
-          { message: 'Unauthorized: Missing or invalid token' },
+          { message: 'Unauthorized: Missing or invalid authentication token' },
           { status: 401 }
         )
       };
@@ -51,109 +30,39 @@ export async function authenticateRequest(request: NextRequest): Promise<{
 
     const token = authHeader.split('Bearer ')[1];
     
-    // In development without proper service accounts, we can validate token format
-    // and extract user ID from the token without full verification
-    // WARNING: Only do this in development!
-    // Default to simplified validation in development unless explicitly disabled
-    if (isDev && process.env.NEXT_PUBLIC_SKIP_API_AUTH_VERIFICATION !== 'false') {
-      try {
-        // Basic check that the token is properly formatted
-        const parts = token.split('.');
-        
-        // Handle both JWT and custom token formats
-        if (parts.length === 3) {
-          // Standard JWT format
-          try {
-            // Extract payload (this is not secure, only for development)
-            // Handle padding issues with base64
-            const base64Payload = parts[1].replace(/-/g, '+').replace(/_/g, '/');
-            const paddedBase64 = base64Payload.padEnd(base64Payload.length + (4 - base64Payload.length % 4) % 4, '=');
-            const payload = JSON.parse(Buffer.from(paddedBase64, 'base64').toString());
-            
-            console.log('DEV MODE: JWT payload fields:', Object.keys(payload));
-            
-            // Check for user ID in various formats
-            if (!payload.user_id && !payload.sub && !payload.uid && !payload.user_id) {
-              // If no user ID found, use a development user ID
-              console.warn('DEV MODE: No user ID found in token, using development user ID');
-              return {
-                authenticated: true,
-                userId: 'dev-user-123',
-                token
-              };
-            }
-            
-            const userId = payload.user_id || payload.sub || payload.uid;
-            
-            console.log('DEV MODE: Using simplified token validation, user ID:', userId);
-            
-            return {
-              authenticated: true,
-              userId,
-              token
-            };
-          } catch (decodeError) {
-            console.error('DEV MODE: Error decoding JWT payload:', decodeError);
-            // Fall through to use development user ID
-          }
-        }
-        
-        // For malformed tokens in development, just allow access with a dev user ID
-        console.warn('DEV MODE: Using development user ID for malformed token');
-        return {
-          authenticated: true,
-          userId: 'dev-user-123',
-          token
-        };
-      } catch (error) {
-        console.error('Error in dev token validation:', error);
-        return {
-          authenticated: false,
-          response: NextResponse.json(
-            { message: 'Unauthorized: Invalid token format' },
-            { status: 401 }
-          )
-        };
-      }
-    }
-    
-    // Normal production verification with better error handling
+    // Production verification with proper error handling
     try {
-      // Check if Firebase Admin is properly initialized first
-      // This can happen if environment variables are missing
-      let auth;
-      try {
-        auth = getAuth();
-      } catch (initError) {
-        console.error('Firebase Admin initialization error:', initError);
-        
-        // In development, allow bypass if Firebase Admin fails to initialize
-        if (isDev) {
-          console.warn('DEV MODE: Bypassing Firebase Admin initialization failure');
-          return {
-            authenticated: true,
-            userId: 'dev-user-123',
-            token
-          };
-        } else {
-          throw new Error('Firebase Admin initialization failed');
-        }
-      }
+      // Get Firebase Auth instance
+      const auth = getAuth();
       
-      // Add clock tolerance to account for slight time differences between client and server
-      const decodedToken = await auth.verifyIdToken(token)
+      // Verify the token with Firebase
+      const decodedToken = await auth.verifyIdToken(token, true); // Force token refresh check
       const userId = decodedToken.uid;
       
+      // Ensure we have a valid user ID
       if (!userId) {
         return {
           authenticated: false,
           response: NextResponse.json(
-            { message: 'Unauthorized: Invalid user' },
+            { message: 'Unauthorized: Invalid user identifier' },
             { status: 401 }
           )
         };
       }
       
+      // Add additional security checks if needed
+      // For example, check if user is disabled or has required roles
+      if (decodedToken.disabled === true) {
+        return {
+          authenticated: false,
+          response: NextResponse.json(
+            { message: 'Unauthorized: User account is disabled' },
+            { status: 403 }
+          )
+        };
+      }
+      
+      // Authentication successful
       return {
         authenticated: true,
         userId,
@@ -161,48 +70,63 @@ export async function authenticateRequest(request: NextRequest): Promise<{
         decodedToken
       };
     } catch (error: any) {
-      // Better error logging for debugging
-      console.error('Token verification failed:', error?.code || error?.message || 'Unknown error');
-      
-      // Special handling for common Firebase auth errors
+      // Handle specific Firebase Auth errors
       const errorCode = error?.code || '';
+      const errorMessage = error?.message || 'Unknown authentication error';
       
-      // For expired tokens, send a special error so the client knows to refresh
-      if (errorCode === 'auth/id-token-expired') {
+      // For expired tokens, send a specific error code
+      if (errorCode === 'auth/id-token-expired' || errorMessage.includes('expired')) {
         return {
           authenticated: false,
           response: NextResponse.json(
-            { message: 'Token expired', code: 'TOKEN_EXPIRED' },
+            { message: 'Authentication failed: Token expired', code: 'TOKEN_EXPIRED' },
             { status: 401 }
           )
         };
       }
       
-      // For development mode, provide a dev bypass option as a fallback
-      if (isDev && process.env.NEXT_PUBLIC_BYPASS_FAILED_VERIFICATION === 'true') {
-        console.warn('DEV MODE: Bypassing failed verification with dev user');
+      // For revoked tokens
+      if (errorCode === 'auth/id-token-revoked' || errorMessage.includes('revoked')) {
         return {
-          authenticated: true,
-          userId: 'dev-user-123',
-          token
+          authenticated: false,
+          response: NextResponse.json(
+            { message: 'Authentication failed: Token revoked', code: 'TOKEN_REVOKED' },
+            { status: 401 }
+          )
         };
       }
       
-      // Default case - return authentication failure
+      // For invalid tokens
+      if (errorMessage.includes('invalid')) {
+        return {
+          authenticated: false,
+          response: NextResponse.json(
+            { message: 'Authentication failed: Invalid token', code: 'INVALID_TOKEN' },
+            { status: 401 }
+          )
+        };
+      }
+      
+      // Log detailed error for debugging but don't expose internals
+      console.error('Token verification failed:', { code: errorCode, message: errorMessage });
+      
+      // Default error response
       return {
         authenticated: false,
         response: NextResponse.json(
-          { message: 'Unauthorized: Invalid token' },
+          { message: 'Authentication failed' },
           { status: 401 }
         )
       };
     }
   } catch (error) {
-    console.error('Authentication error:', error);
+    // Critical server errors - something went wrong with our code
+    console.error('Authentication system error:', error);
+    
     return {
       authenticated: false,
       response: NextResponse.json(
-        { message: 'Server authentication error' },
+        { message: 'Authentication service unavailable' },
         { status: 500 }
       )
     };

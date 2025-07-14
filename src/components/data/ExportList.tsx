@@ -6,6 +6,7 @@ import { auth } from '@/utils/firebase';
 import { useToast } from '@/components/ui/toast';
 import { Button } from '@/components/ui/button';
 import { useRouter } from 'next/navigation';
+import SessionExpiredModal from '@/components/auth/SessionExpiredModal';
 
 interface ExportItem {
   exportId: string;
@@ -27,6 +28,7 @@ export default function ExportList({ refreshTrigger = 0 }: ExportListProps) {
   const [error, setError] = useState<string | null>(null);
   const [isAuthError, setIsAuthError] = useState(false);
   const [retryCount, setRetryCount] = useState(0);
+  const [showAuthModal, setShowAuthModal] = useState(false);
   const { user } = useAuth();
   const { toast } = useToast();
   const router = useRouter();
@@ -48,7 +50,7 @@ export default function ExportList({ refreshTrigger = 0 }: ExportListProps) {
   }, []);
 
   // Debounced fetch function with exponential backoff for retries
-  const fetchExports = useCallback(async (isRetry = false, retryCount = 0) => {
+  const fetchExports = useCallback(async (isRetry = false, currentRetryCount = 0) => {
     if (!user) return;
     
     // Rate limiting protection
@@ -64,7 +66,7 @@ export default function ExportList({ refreshTrigger = 0 }: ExportListProps) {
       // Schedule a fetch after the debounce period
       fetchTimeoutRef.current = setTimeout(() => {
         if (isMountedRef.current) {
-          fetchExports();
+          fetchExports(false, 0);
         }
       }, 2000 - timeSinceLastFetch);
       
@@ -77,23 +79,45 @@ export default function ExportList({ refreshTrigger = 0 }: ExportListProps) {
     if (!isRetry) {
       setLoading(true);
       setError(null);
+      setIsAuthError(false);
     }
 
+    // Create a reference to store controller and timeout
+    const abortController = new AbortController();
+    let timeoutId: NodeJS.Timeout | null = null;
+    
+    // Create a cleanup function to ensure both timeout and controller are properly handled
+    const cleanupRequest = () => {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+        timeoutId = null;
+      }
+    };
+
     try {
-      // Use our authenticated fetch utility with automatic token refresh
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+      // Set a timeout for the request
+      toast({
+        title: 'Starting Download',
+        description: 'Preparing your export...',
+        variant: 'default',
+        duration: 3000
+      });
+      
+      timeoutId = setTimeout(() => {
+        if (abortController) {
+          abortController.abort();
+          console.log('Request timed out after 45 seconds');
+        }
+      }, 45000); // 45 second timeout for larger R2 files
       
       const response = await fetchWithAuth('/api/exports', {
         headers: {
           'Cache-Control': 'no-cache',
           'Pragma': 'no-cache'
         },
-        signal: controller.signal
+        signal: abortController.signal
       });
       
-      clearTimeout(timeoutId);
-
       if (!response.ok) {
         // If response is 401/403, it's an auth issue
         if (response.status === 401 || response.status === 403) {
@@ -103,7 +127,7 @@ export default function ExportList({ refreshTrigger = 0 }: ExportListProps) {
           
           // If token expired, try refreshing token and retry once
           if (errorData?.code === 'TOKEN_EXPIRED' || errorData?.message?.includes('expired')) {
-            if (retryCount < 2) {
+            if (currentRetryCount < 2) {
               console.log('Token expired in ExportList, forcing refresh and retrying...');
               
               // Force token refresh
@@ -115,19 +139,26 @@ export default function ExportList({ refreshTrigger = 0 }: ExportListProps) {
                   
                   // Wait a moment then retry
                   setTimeout(() => {
-                    fetchExports(true, retryCount + 1);
+                    if (isMountedRef.current) {
+                      fetchExports(true, currentRetryCount + 1);
+                    }
                   }, 1000);
+                  cleanupRequest(); // Clean up before returning
                   return;
                 }
               } catch (refreshError) {
-                console.error('Failed to refresh token after expiry in ExportList:', refreshError);
+                console.error('Error refreshing token:', refreshError);
               }
             }
           }
           
-          // If we got here, we couldn't refresh the token or retries failed
-          setIsAuthError(true);
-          throw new Error('Session expired. Please reload the page or sign in again.');
+          // Set auth error state for UI feedback and show modal
+          if (isMountedRef.current) {
+            setIsAuthError(true);
+            setError('Your session has expired. Please sign in again.');
+            setShowAuthModal(true);
+          }
+          throw new Error('Authentication error. Session expired.');
         }
         
         // If rate limited (429), implement exponential backoff
@@ -141,12 +172,7 @@ export default function ExportList({ refreshTrigger = 0 }: ExportListProps) {
 
       const data = await response.json();
       
-      // Reset retry count on success
-      if (retryCount > 0) {
-        setRetryCount(0);
-      }
-      
-      // Sort exports by exportedAt date (newest first)
+      // Sort exports by date, most recent first
       const sortedExports = data.exports.map((exportItem: any) => ({
         ...exportItem,
         exportedAt: new Date(exportItem.exportedAt)
@@ -154,31 +180,46 @@ export default function ExportList({ refreshTrigger = 0 }: ExportListProps) {
         b.exportedAt.getTime() - a.exportedAt.getTime()
       );
       
+      // Handle fetch success
       if (isMountedRef.current) {
-        setExports(sortedExports);
+        setExports(Array.isArray(sortedExports) ? sortedExports : []);
         setError(null);
+        setRetryCount(0); // Reset retry count on success
       }
-    } catch (err) {
-      console.error('Error fetching exports:', err);
+      
+    } catch (error) {
+      if (!isMountedRef.current) return;
+      
+      console.error('Error fetching exports:', error);
+      
+      // Handle AbortError specifically
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        setError('Request timed out. Please try again.');
+      } else {
+        // Provide better error message for the user
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        setError(errorMessage);
+      }
+      
+      // Cancel any pending retries
+      if (fetchTimeoutRef.current) {
+        clearTimeout(fetchTimeoutRef.current);
+        fetchTimeoutRef.current = null;
+      }
       
       // Only show toast for non-retry attempts to avoid spamming
       if (!isRetry && isMountedRef.current) {
-        setError(err instanceof Error ? err.message : 'Failed to load exports');
-        
-        // Don't show toast for rate limiting, just retry
-        if (!(err instanceof Error && err.message?.includes('Rate limited'))) {
-          toast({
-            title: 'Error Loading Exports',
-            description: err instanceof Error ? err.message : 'Failed to load exports',
-            variant: 'destructive',
-            duration: 5000
-          });
-        }
+        toast({
+          title: 'Error Loading Exports',
+          description: error instanceof Error ? error.message : 'Failed to load exports',
+          variant: 'destructive',
+          duration: 5000
+        });
       }
       
-      // Implement exponential backoff for retries
-      if (isMountedRef.current && retryCount < 5) { // Max 5 retries
-        const nextRetryCount = retryCount + 1;
+      // Retry with exponential backoff
+      if (isMountedRef.current && currentRetryCount < 5) { // Max 5 retries
+        const nextRetryCount = currentRetryCount + 1;
         setRetryCount(nextRetryCount);
         
         // Exponential backoff: 2^retry * 1000ms (1s, 2s, 4s, 8s, 16s)
@@ -188,23 +229,29 @@ export default function ExportList({ refreshTrigger = 0 }: ExportListProps) {
         
         fetchTimeoutRef.current = setTimeout(() => {
           if (isMountedRef.current) {
-            fetchExports(true); // Retry with flag
+            fetchExports(true, nextRetryCount);
           }
         }, retryDelay);
       }
+      
     } finally {
+      cleanupRequest();
       if (isMountedRef.current && !isRetry) {
         setLoading(false);
       }
     }
-  }, [user, retryCount, toast]);
+  }, [user, retryCount, toast, isMountedRef]);
 
   // Trigger fetch when dependencies change
   useEffect(() => {
-    fetchExports();
+    fetchExports(false, 0);
   }, [fetchExports, refreshTrigger]);
 
   const handleDownload = async (exportId: string, fileName: string) => {
+    // Create controller and timeout variables outside try block so they can be cleaned up in finally
+    let controller: AbortController | null = new AbortController();
+    let timeoutId: NodeJS.Timeout | null = null;
+    
     try {
       if (!user) {
         toast({
@@ -216,22 +263,47 @@ export default function ExportList({ refreshTrigger = 0 }: ExportListProps) {
         return;
       }
       
-      // Use our authenticated fetch utility with automatic token refresh
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout for larger files
+      // Force refresh token before download to prevent auth issues
+      if (auth.currentUser) {
+        try {
+          // Always refresh token before downloads as they're less frequent operations
+          const token = await auth.currentUser.getIdToken(true);
+          sessionStorage.setItem('authToken', token);
+          console.log('Token refreshed successfully before download');
+        } catch (tokenError) {
+          console.warn('Token refresh failed:', tokenError);
+          // Continue with potentially cached token
+        }
+      }
+      
+      // Show downloading toast
+      toast({
+        title: 'Starting Download',
+        description: 'Preparing your export...',
+        variant: 'default',
+        duration: 3000
+      });
+      
+      timeoutId = setTimeout(() => {
+        if (controller) {
+          controller.abort();
+          console.log('Download request timed out after 45 seconds');
+        }
+      }, 45000); // 45 second timeout for larger R2 files
       
       const response = await fetchWithAuth(`/api/export/${exportId}`, {
         signal: controller.signal
       });
-      
-      clearTimeout(timeoutId);
 
       if (!response.ok) {
         // Handle specific error cases
         if (response.status === 401 || response.status === 403) {
-          setIsAuthError(true);
-          setError('Authentication error. Please sign in again.');
-          throw new Error('Authentication error. Please sign in again.');
+          if (isMountedRef.current) {
+            setIsAuthError(true);
+            setError('Your session has expired. Please sign in again.');
+            setShowAuthModal(true); // Show modal instead of just error message
+          }
+          throw new Error('Authentication error. Session expired.');
         }
         
         // Handle rate limiting
@@ -243,16 +315,66 @@ export default function ExportList({ refreshTrigger = 0 }: ExportListProps) {
         throw new Error(`Failed to fetch export: ${response.statusText}`);
       }
 
-      const data = await response.json();
+      const exportData = await response.json();
       
-      // Create a data URL from the Base64 content
-      const contentType = data.contentType || 'application/octet-stream';
-      const blob = data.exportContent.startsWith('data:') 
-        ? await fetch(data.exportContent).then(r => r.blob())
-        : new Blob([Buffer.from(data.exportContent, 'base64')], { type: contentType });
+      // Process export content based on format and storage location
+      let dataBlob: Blob;
+      
+      // Check if the export was stored using R2 (new system)
+      if (exportData.fromR2) {
+        console.log('Processing R2-stored export');
+        // For R2-stored files, the exportContent will be base64 from the API
+        const contentType = exportData.contentType || 'application/octet-stream';
+        
+        // Convert base64 to blob
+        const byteCharacters = window.atob(exportData.exportContent);
+        const byteArrays = [];
+        for (let i = 0; i < byteCharacters.length; i += 1024) {
+          const slice = byteCharacters.slice(i, i + 1024);
+          const byteNumbers = new Array(slice.length);
+          for (let j = 0; j < slice.length; j++) {
+            byteNumbers[j] = slice.charCodeAt(j);
+          }
+          const byteArray = new Uint8Array(byteNumbers);
+          byteArrays.push(byteArray);
+        }
+        dataBlob = new Blob(byteArrays, { type: contentType });
+      } else if (exportData.exportContent.startsWith('data:')) {
+        // Legacy: It's already a data URL (from old Firebase storage)
+        const parts = exportData.exportContent.split(',');
+        if (parts.length === 2) {
+          const base64Data = parts[1];
+          const contentType = parts[0].split(':')[1].split(';')[0];
+          const binaryString = window.atob(base64Data);
+          const bytes = new Uint8Array(binaryString.length);
+          for (let i = 0; i < binaryString.length; i++) {
+            bytes[i] = binaryString.charCodeAt(i);
+          }
+          dataBlob = new Blob([bytes], { type: contentType });
+        } else {
+          throw new Error('Invalid data URL format');
+        }
+      } else {
+        // Legacy: It's base64, convert to blob
+        const contentType = exportData.contentType || 'application/octet-stream';
+        
+        // Convert base64 to blob
+        const byteCharacters = window.atob(exportData.exportContent);
+        const byteArrays = [];
+        for (let i = 0; i < byteCharacters.length; i += 1024) {
+          const slice = byteCharacters.slice(i, i + 1024);
+          const byteNumbers = new Array(slice.length);
+          for (let j = 0; j < slice.length; j++) {
+            byteNumbers[j] = slice.charCodeAt(j);
+          }
+          const byteArray = new Uint8Array(byteNumbers);
+          byteArrays.push(byteArray);
+        }
+        dataBlob = new Blob(byteArrays, { type: contentType });
+      }
       
       // Create a temporary link to download the file
-      const url = URL.createObjectURL(blob);
+      const url = URL.createObjectURL(dataBlob);
       const a = document.createElement('a');
       a.href = url;
       a.download = `${fileName}.zip`;
@@ -261,20 +383,67 @@ export default function ExportList({ refreshTrigger = 0 }: ExportListProps) {
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
       
-      toast({
-      title: 'Download Started',
-      description: 'Your export is being downloaded',
-      variant: 'success',
-      duration: 3000
-    });
+      if (isMountedRef.current) {
+        toast({
+          title: 'Download Started',
+          description: 'Your export is being downloaded',
+          variant: 'success',
+          duration: 3000
+        });
+      }
     } catch (error) {
       console.error('Download error:', error);
-      toast({
-        title: 'Download Failed',
-        description: error instanceof Error ? error.message : 'Failed to download export',
-        variant: 'destructive',
-        duration: 5000
-      });
+      
+      // Only show error toast if still mounted
+      if (isMountedRef.current) {
+        // Different message for specific error types
+        if (error instanceof DOMException && error.name === 'AbortError') {
+          toast({
+            title: 'Download Timeout',
+            description: 'The download took too long and was cancelled. Please try again.',
+            variant: 'destructive',
+            duration: 5000
+          });
+        } else if (error instanceof Response || (error as any)?.status === 401 || 
+                 (error instanceof Error && error.message.includes('auth'))) {
+          toast({
+            title: 'Authentication Error',
+            description: 'Your session has expired. Please sign in again.',
+            variant: 'destructive',
+            duration: 5000
+          });
+          // Force refresh token on auth error
+          if (auth.currentUser) {
+            try {
+              await auth.currentUser.getIdToken(true);
+            } catch (refreshError) {
+              console.error('Failed to refresh token after auth error:', refreshError);
+            }
+          }
+        } else if ((error as any)?.status === 429 || 
+                   (error instanceof Error && error.message.includes('too many requests'))) {
+          toast({
+            title: 'Too Many Requests',
+            description: 'Please wait a moment before downloading again.',
+            variant: 'destructive',
+            duration: 5000
+          });
+        } else {
+          toast({
+            title: 'Download Failed',
+            description: error instanceof Error ? error.message : 'Failed to download export',
+            variant: 'destructive',
+            duration: 5000
+          });
+        }
+      }
+    } finally {
+      // Clean up resources
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+        timeoutId = null;
+      }
+      controller = null;
     }
   };
 
@@ -295,14 +464,14 @@ export default function ExportList({ refreshTrigger = 0 }: ExportListProps) {
         
         {isAuthError ? (
           <button 
-            onClick={() => router.push('/auth/signin')} 
+            onClick={() => setShowAuthModal(true)} 
             className="mt-4 flex items-center px-3 py-1 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
           >
             <FiLogIn className="mr-1" /> Sign in again
           </button>
         ) : (
           <button 
-            onClick={() => fetchExports()} 
+            onClick={() => fetchExports(false, 0)} 
             className="mt-4 flex items-center px-3 py-1 text-sm bg-blue-100 text-blue-700 rounded hover:bg-blue-200 transition-colors"
           >
             <FiRefreshCw className="mr-1" /> Retry
@@ -321,9 +490,19 @@ export default function ExportList({ refreshTrigger = 0 }: ExportListProps) {
     );
   }
 
+  const handleCloseAuthModal = () => {
+    setShowAuthModal(false);
+    // After successful sign-in, retry fetching exports
+    setTimeout(() => {
+      fetchExports(false, 0);
+    }, 500);
+  };
+
   return (
-    <div className="overflow-y-auto max-h-[400px]">
-      <ul className="divide-y divide-gray-200 dark:divide-gray-800">
+    <>
+      <SessionExpiredModal isOpen={showAuthModal} onClose={handleCloseAuthModal} />
+      <div className="overflow-y-auto max-h-[400px]">
+        <ul className="divide-y divide-gray-200 dark:divide-gray-800">
         {exports.map((exportItem) => (
           <li 
             key={exportItem.exportId}
@@ -358,7 +537,8 @@ export default function ExportList({ refreshTrigger = 0 }: ExportListProps) {
             </div>
           </li>
         ))}
-      </ul>
-    </div>
+        </ul>
+      </div>
+    </>
   );
 }

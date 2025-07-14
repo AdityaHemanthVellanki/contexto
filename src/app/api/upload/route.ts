@@ -3,6 +3,87 @@ import { getFirestore } from '@/lib/firebase-admin';
 import * as admin from 'firebase-admin';
 import { authenticateRequest } from '@/lib/api-auth';
 import { rateLimit } from '@/lib/rate-limiter';
+import { r2, R2_BUCKET } from '@/lib/r2';
+import { PutObjectCommand } from '@aws-sdk/client-s3';
+
+/**
+ * Handle binary file upload directly from raw request body
+ * This is the recommended approach for the new R2 storage implementation
+ */
+async function handleBinaryUpload(request: NextRequest, userId: string): Promise<NextResponse> {
+  // Get file metadata from headers
+  const filename = request.headers.get('x-filename');
+  const mimetype = request.headers.get('x-mimetype');
+  
+  if (!filename || !mimetype) {
+    return NextResponse.json({ 
+      message: 'Missing required headers: x-filename and x-mimetype' 
+    }, { status: 400 });
+  }
+  
+  // Create a unique file identifier
+  const timestamp = Date.now();
+  const uploadId = `${userId}_${timestamp}`;
+  
+  try {
+    // Read the binary data from the request body
+    const arrayBuffer = await request.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+    
+    // Validate file size
+    const maxSize = 52428800; // 50MB
+    if (buffer.byteLength > maxSize) {
+      return NextResponse.json({ 
+        message: 'File too large. Maximum size is 50MB' 
+      }, { status: 400 });
+    }
+    
+    // Create the R2 object key with user isolation
+    const key = `${userId}/uploads/${timestamp}_${filename}`;
+    
+    // Upload to R2
+    await r2.send(
+      new PutObjectCommand({
+        Bucket: R2_BUCKET,
+        Key: key,
+        Body: buffer,
+        ContentType: mimetype
+      })
+    );
+    
+    console.log(`Binary file successfully uploaded to R2: ${key}`);
+    
+    // Generate R2 file URL
+    const fileUrl = process.env.CF_R2_ENDPOINT 
+      ? `${process.env.CF_R2_ENDPOINT}/${R2_BUCKET}/${encodeURIComponent(key)}`
+      : `https://${R2_BUCKET}.r2.cloudflarestorage.com/${encodeURIComponent(key)}`;
+    
+    // Store metadata in Firestore
+    const uploadRef = getFirestore().collection('uploads').doc(uploadId);
+    await uploadRef.set({
+      userId,
+      fileId: uploadId,
+      fileName: filename,
+      fileType: mimetype,
+      fileSize: buffer.byteLength,
+      fileUrl,
+      r2Key: key,
+      uploadedAt: admin.firestore.FieldValue.serverTimestamp(),
+      status: 'uploaded',
+    });
+    
+    return NextResponse.json({
+      fileId: uploadId,
+      fileName: filename,
+      fileUrl,
+      message: 'File uploaded successfully to R2'
+    }, { status: 200 });
+  } catch (error: unknown) {
+    console.error('Binary upload error:', error);
+    const errorMessage = error instanceof Error ? error.message : 'Unknown upload error';
+    return NextResponse.json({ message: `Upload failed: ${errorMessage}` }, { status: 500 });
+  }
+}
 
 // Initialize Firebase Admin services
 const db = getFirestore();
@@ -35,7 +116,14 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ message: 'Unauthorized: Invalid user' }, { status: 401 });
     }
 
-    // Process multipart/form-data
+    // Check if we're receiving raw binary data with headers (for R2 upload)
+    const contentType = request.headers.get('content-type');
+    
+    if (contentType === 'application/octet-stream') {
+      return await handleBinaryUpload(request, userId);
+    } 
+    
+    // Process multipart/form-data (legacy form upload)
     const formData = await request.formData();
     const file = formData.get('file') as File;
     
@@ -62,34 +150,49 @@ export async function POST(request: NextRequest) {
     const timestamp = Date.now();
     const uploadId = `${userId}_${timestamp}`;
     
-    // Read file content as appropriate format
+    // Read file content as array buffer for upload to R2
     const arrayBuffer = await file.arrayBuffer();
-    let fileContent = '';
+    const buffer = Buffer.from(arrayBuffer);
     
-    // Process content based on file type
-    if (file.type === 'application/pdf') {
-      // Convert binary files to Base64 string
-      const buffer = Buffer.from(arrayBuffer);
-      fileContent = buffer.toString('base64');
-    } else {
-      // For text files (text/plain, text/csv, application/json, text/markdown)
-      // Convert ArrayBuffer to UTF-8 string
-      const decoder = new TextDecoder('utf-8');
-      fileContent = decoder.decode(arrayBuffer);
+    // Create a unique key for R2 storage with user isolation
+    const key = `${userId}/uploads/${timestamp}_${file.name}`;
+    
+    // Upload file to R2
+    try {
+      await r2.send(
+        new PutObjectCommand({
+          Bucket: R2_BUCKET,
+          Key: key,
+          Body: buffer,
+          ContentType: file.type
+        })
+      );
+      
+      console.log(`File successfully uploaded to R2: ${key}`);
+      
+      // Generate R2 file URL
+      const fileUrl = process.env.CF_R2_ENDPOINT 
+        ? `${process.env.CF_R2_ENDPOINT}/${R2_BUCKET}/${encodeURIComponent(key)}`
+        : `https://${R2_BUCKET}.r2.cloudflarestorage.com/${encodeURIComponent(key)}`;
+      
+      // Store only metadata in Firestore (not the file content)
+      const uploadRef = db.collection('uploads').doc(uploadId);
+      await uploadRef.set({
+        userId,
+        fileId: uploadId,
+        fileName: file.name,
+        fileType: file.type,
+        fileSize: file.size,
+        fileUrl, // Store the R2 URL instead of the content
+        r2Key: key, // Store the R2 key for future reference
+        uploadedAt: FieldValue.serverTimestamp(),
+        status: 'uploaded',
+      });
+    } catch (error: unknown) {
+      console.error('R2 upload error:', error);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown R2 error';
+      throw new Error(`Failed to upload file to R2: ${errorMessage}`);
     }
-    
-    // Store file content and metadata directly in Firestore
-    const uploadRef = db.collection('uploads').doc(uploadId);
-    await uploadRef.set({
-      userId,
-      fileId: uploadId,
-      fileName: file.name,
-      fileType: file.type,
-      fileContent, // Store content directly in Firestore
-      fileSize: file.size,
-      uploadedAt: FieldValue.serverTimestamp(),
-      status: 'uploaded',
-    });
 
     // Create response with the file details
     const response = NextResponse.json({

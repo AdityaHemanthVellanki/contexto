@@ -1,4 +1,9 @@
 /// <reference types="cypress" />
+/// <reference types="node" />
+/// <reference types="mocha" />
+
+// Import from global.d.ts for TypeScript type checking
+import '../support/global';
 
 describe('Pipeline Production End-to-End Tests', () => {
   let authToken: string;
@@ -52,15 +57,16 @@ describe('Pipeline Production End-to-End Tests', () => {
     cy.window().then((win: any) => {
       // This assumes you have a test user set up in your Firebase project
       // Do not use the test credentials in production
-      return win.firebase.auth().signInWithEmailAndPassword(
-        Cypress.env('TEST_USER_EMAIL'),
-        Cypress.env('TEST_USER_PASSWORD')
-      ).then((userCredential: any) => {
-        userId = userCredential.user.uid;
-        return userCredential.user.getIdToken();
-      }).then((token: string) => {
-        authToken = token;
-      });
+      const email = Cypress.env('TEST_USER_EMAIL') as string;
+      const password = Cypress.env('TEST_USER_PASSWORD') as string;
+      
+      return win.firebase.auth().signInWithEmailAndPassword(email, password)
+        .then((userCredential: any) => {
+          userId = userCredential.user.uid;
+          return userCredential.user.getIdToken();
+        }).then((token: string) => {
+          authToken = token;
+        });
     });
   });
 
@@ -125,7 +131,16 @@ describe('Pipeline Production End-to-End Tests', () => {
 
   it('Should execute a pipeline with real Azure OpenAI API', () => {
     // Only run this test if we have the required env vars
-    if (!Cypress.env('RUN_OPENAI_TESTS')) {
+    // Get the env variable value safely
+    let runOpenAiTests = false;
+    try {
+      runOpenAiTests = Boolean(Cypress.env('RUN_OPENAI_TESTS'));
+    } catch (e) {
+      // Fallback if env var cannot be accessed
+      runOpenAiTests = false;
+    }
+    
+    if (!runOpenAiTests) {
       cy.log('Skipping OpenAI API test - RUN_OPENAI_TESTS flag not set');
       return;
     }

@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { useRouter } from 'next/navigation';
 import { fetchWithAuth } from '@/lib/auth-interceptor';
 import { auth } from '@/utils/firebase';
+import SessionExpiredModal from '@/components/auth/SessionExpiredModal';
 
 interface FileItem {
   fileId: string;
@@ -28,6 +29,7 @@ export default function FileList({ onSelectFile, activeFileId, refreshTrigger = 
   const [error, setError] = useState<string | null>(null);
   const [isAuthError, setIsAuthError] = useState(false);
   const [retryCount, setRetryCount] = useState(0);
+  const [showAuthModal, setShowAuthModal] = useState(false);
   const { user } = useAuth();
   const { toast } = useToast();
   const router = useRouter();
@@ -49,8 +51,45 @@ export default function FileList({ onSelectFile, activeFileId, refreshTrigger = 
   }, []);
 
   // Debounced fetch function with exponential backoff for retries
-  const fetchFiles = useCallback(async (isRetry = false, retryCount = 0) => {
-    if (!user) return;
+  const fetchFiles = useCallback(async (isRetry = false, currentRetryCount = 0) => {
+    console.log('Fetching files, isRetry:', isRetry, 'retryCount:', currentRetryCount);
+    
+    if (!user) {
+      console.warn('No user found, showing auth modal');
+      setIsAuthError(true);
+      setError('Authentication required. Please sign in.');
+      setShowAuthModal(true);
+      return;
+    }
+    
+    // Force refresh token before fetching files to prevent auth issues
+    if (!isRetry && auth.currentUser) {
+      try {
+        // Force token refresh and save to sessionStorage for API calls
+        const freshToken = await auth.currentUser.getIdToken(true);
+        sessionStorage.setItem('authToken', freshToken);
+        console.log('Token refreshed before fetching file list');
+      } catch (tokenError) {
+        console.error('Token refresh failed:', tokenError);
+        
+        // Check if the error is auth-related
+        let tokenErrorMessage = 'Unknown error';
+        if (tokenError instanceof Error) {
+          tokenErrorMessage = tokenError.message;
+        }
+        
+        if (tokenErrorMessage.includes('auth') || 
+            tokenErrorMessage.includes('token') || 
+            tokenErrorMessage.includes('credential')) {
+          setIsAuthError(true);
+          setError('Your session has expired. Please sign in again.');
+          setShowAuthModal(true);
+          return;
+        }
+        
+        // Continue with potentially cached token if not auth-related
+      }
+    }
     
     // Rate limiting protection
     const now = Date.now();
@@ -82,116 +121,239 @@ export default function FileList({ onSelectFile, activeFileId, refreshTrigger = 
 
     try {
       // Use our authenticated fetch utility with automatic token refresh
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+      const abortController = new AbortController();
+      let timeoutId: NodeJS.Timeout | null = null;
       
-      const response = await fetchWithAuth('/api/uploads', {
-        headers: {
-          'Cache-Control': 'no-cache',
-          'Pragma': 'no-cache'
-        },
-        signal: controller.signal
-      });
+      const cleanupRequest = () => {
+        if (timeoutId) {
+          clearTimeout(timeoutId);
+          timeoutId = null;
+        }
+      };
       
-      clearTimeout(timeoutId);
+      // Define a variable to track if this is an auth error
+      let isAuthRelatedError = false;
+      
+      try {
+        // Set timeout to abort if request takes too long
+        timeoutId = setTimeout(() => {
+          if (isMountedRef.current) {
+            console.log('Request timeout reached, aborting');
+            abortController.abort();
+          }
+        }, 15000);
 
-      if (!response.ok) {
-        // If response is 401/403, it's an auth issue
-        if (response.status === 401 || response.status === 403) {
-          // Try to get error details from response
-          const errorData = await response.json().catch(() => ({}));
-          console.log('Auth error details:', errorData);
+        const response = await fetchWithAuth('/api/uploads', {
+          headers: {
+            'Cache-Control': 'no-cache',
+            'Pragma': 'no-cache'
+          },
+          signal: abortController.signal
+        });
+        
+        // Check for non-OK responses
+        if (!response.ok) {
+          // Extract error details from response
+          let errorData = { message: 'Unknown error', code: '' };
+          try {
+            errorData = await response.json();
+          } catch (e) {
+            console.warn('Failed to parse error response:', e);
+            // Fallback error message if JSON parsing fails
+            errorData = { 
+              message: response.statusText || 'Server error occurred', 
+              code: 'PARSE_ERROR' 
+            };
+          }
           
-          // If token expired, try refreshing token and retry once
-          if (errorData?.code === 'TOKEN_EXPIRED' || errorData?.message?.includes('expired')) {
-            if (retryCount < 2) {
-              console.log('Token expired, forcing refresh and retrying...');
-              
-              // Force token refresh
+          // Ensure we have proper error information
+          const errorMessage = errorData.message || 'Failed to load files';
+          const errorCode = errorData.code || '';
+          const errorDetails = {
+            status: response.status,
+            statusText: response.statusText,
+            message: errorMessage,
+            code: errorCode,
+            url: '/api/uploads'
+          };
+          console.error('File list error details:', errorDetails);
+          
+          // Handle authentication errors
+          if (response.status === 401 || response.status === 403 || 
+              errorMessage.toLowerCase().includes('session') ||
+              errorMessage.toLowerCase().includes('auth') ||
+              errorMessage.toLowerCase().includes('token') ||
+              ['SESSION_EXPIRED', 'AUTH_ERROR', 'AUTH_REQUIRED', 'TOKEN_EXPIRED', 'TOKEN_REVOKED']
+                .includes(errorCode)) {
+            
+            console.warn('Authentication error in FileList:', errorCode || response.status);
+            setIsAuthError(true);
+            isAuthRelatedError = true;
+            setError('Authentication error. Session expired.');
+            setShowAuthModal(true);
+            
+            // Clear stored token when auth error detected
+            sessionStorage.removeItem('authToken');
+            
+            // We'll use the AuthContext's user object and sign-in methods instead
+            // of direct Firebase auth access since that's more consistent with
+            // the application's authentication architecture
+            try {
+              // Just mark that we should sign in again
+              console.log('Authentication token needs refresh - will prompt for sign in');
+            } catch (refreshError) {
+              console.error('Error handling auth refresh:', refreshError);
+            }
+            throw new Error('Authentication error. Session expired.');
+          }
+          
+          // Handle rate limiting specially
+          if (response.status === 429) {
+            const retryAfter = parseInt(response.headers.get('Retry-After') || '1', 10);
+            throw new Error(`Rate limited. Retrying in ${retryAfter} seconds.`);
+          }
+          
+          // Handle other API errors
+          throw new Error(`Error loading files: ${errorMessage}`);
+        }
+        
+        // Process successful response
+        const responseData = await response.json();
+        const fileUploads = responseData.uploads || [];
+        
+        // Sort files by uploadedAt date (newest first)
+        const processedFiles = fileUploads.map((file: any) => ({
+          ...file,
+          uploadedAt: new Date(file.uploadedAt || Date.now())
+        })).sort((a: FileItem, b: FileItem) => 
+          b.uploadedAt.getTime() - a.uploadedAt.getTime()
+        );
+        
+        if (isMountedRef.current) {
+          // Reset auth error state on successful fetch
+          setIsAuthError(false);
+          
+          // Reset retry count on success
+          if (retryCount > 0) {
+            setRetryCount(0);
+          }
+          
+          setFiles(processedFiles);
+          setError(null);
+        }
+      } catch (err) {
+        // Improved error handling with more detailed logging
+        let errorMessage = 'Unknown error occurred';
+        let errorDetails: Record<string, any> = {};
+        
+        // Force debug log of the raw error object
+        console.log('Raw error object in FileList:', err);
+        
+        if (err instanceof Error) {
+          errorMessage = err.message;
+          errorDetails = {
+            name: err.name,
+            message: err.message,
+            stack: err.stack ? err.stack.split('\n').slice(0, 3).join('\n') : 'No stack trace'
+          };
+          
+          // Extract any additional properties from the error
+          Object.getOwnPropertyNames(err).forEach(key => {
+            if (key !== 'name' && key !== 'message' && key !== 'stack') {
               try {
-                const user = auth.currentUser;
-                if (user) {
-                  await user.getIdToken(true);
-                  console.log('Token refreshed successfully, retrying fetch');
-                  
-                  // Wait a moment then retry
-                  setTimeout(() => {
-                    fetchFiles(true, retryCount + 1);
-                  }, 1000);
-                  return;
-                }
-              } catch (refreshError) {
-                console.error('Failed to refresh token after expiry:', refreshError);
+                // @ts-ignore: Dynamic property access
+                errorDetails[key] = JSON.stringify(err[key]);
+              } catch (e) {
+                // @ts-ignore: Dynamic property access
+                errorDetails[key] = '[Non-serializable value]';
               }
             }
-          }
-          
-          // If we got here, we couldn't refresh the token or retries failed
-          setIsAuthError(true);
-          throw new Error('Authentication error. Please reload the page or sign in again.');
-        }
-        
-        // If rate limited (429), implement exponential backoff
-        if (response.status === 429) {
-          const retryAfter = parseInt(response.headers.get('Retry-After') || '1', 10);
-          throw new Error(`Rate limited. Retrying in ${retryAfter} seconds.`);
-        }
-        
-        throw new Error(`Failed to fetch files: ${response.statusText}`);
-      }
-
-      const data = await response.json();
-      
-      // Reset retry count on success
-      if (retryCount > 0) {
-        setRetryCount(0);
-      }
-      
-      // Sort files by uploadedAt date (newest first)
-      const sortedFiles = data.uploads.map((file: any) => ({
-        ...file,
-        uploadedAt: new Date(file.uploadedAt)
-      })).sort((a: FileItem, b: FileItem) => 
-        b.uploadedAt.getTime() - a.uploadedAt.getTime()
-      );
-      
-      if (isMountedRef.current) {
-        setFiles(sortedFiles);
-        setError(null);
-      }
-    } catch (err) {
-      console.error('Error fetching files:', err);
-      
-      // Only show toast for non-retry attempts to avoid spamming
-      if (!isRetry && isMountedRef.current) {
-        setError(err instanceof Error ? err.message : 'Failed to load files');
-        
-        // Don't show toast for rate limiting, just retry
-        if (!(err instanceof Error && err.message?.includes('Rate limited'))) {
-          toast({
-            title: 'Error Loading Files',
-            description: err instanceof Error ? err.message : 'Failed to load files',
-            variant: 'destructive',
-            duration: 5000
           });
-        }
-      }
-      
-      // Implement exponential backoff for retries
-      if (isMountedRef.current && retryCount < 5) { // Max 5 retries
-        const nextRetryCount = retryCount + 1;
-        setRetryCount(nextRetryCount);
-        
-        // Exponential backoff: 2^retry * 1000ms (1s, 2s, 4s, 8s, 16s)
-        const retryDelay = Math.min(Math.pow(2, nextRetryCount) * 1000, 30000);
-        
-        console.log(`Retrying in ${retryDelay/1000}s (attempt ${nextRetryCount}/5)`);
-        
-        fetchTimeoutRef.current = setTimeout(() => {
-          if (isMountedRef.current) {
-            fetchFiles(true); // Retry with flag
+        } else if (err !== null && typeof err === 'object') {
+          try {
+            errorMessage = JSON.stringify(err);
+            // Convert each property to ensure serializability
+            Object.entries(err).forEach(([key, value]) => {
+              try {
+                errorDetails[key] = typeof value === 'object' ? JSON.stringify(value) : value;
+              } catch (e) {
+                errorDetails[key] = '[Non-serializable value]';
+              }
+            });
+          } catch (e) {
+            errorMessage = 'Complex error object that cannot be stringified';
+            errorDetails.stringifyError = String(e);
           }
-        }, retryDelay);
+        } else if (err === null) {
+          errorMessage = 'Null error received';
+          errorDetails.isNull = true;
+        } else if (err === undefined) {
+          errorMessage = 'Undefined error received';
+          errorDetails.isUndefined = true;
+        } else {
+          errorMessage = String(err);
+          errorDetails.primitiveValue = String(err);
+          errorDetails.valueType = typeof err;
+        }
+        
+        // Ensure error details is never empty
+        if (Object.keys(errorDetails).length === 0) {
+          errorDetails.fallback = 'No extractable details';
+          errorDetails.timestamp = new Date().toISOString();
+        }
+        
+        console.error('Error fetching files:', errorMessage, errorDetails);
+        
+        // Only show errors for non-retry attempts to avoid spamming
+        if (!isRetry && isMountedRef.current) {
+          // Check for authentication-related errors in the error message
+          const authKeywords = ['authentication', 'unauthorized', 'forbidden', 'session expired', 
+                               'token expired', 'login required', 'token revoked'];
+          
+          // Check if this is an auth-related error based on keywords
+          const hasAuthKeyword = authKeywords.some(keyword => 
+            errorMessage.toLowerCase().includes(keyword.toLowerCase())
+          );
+          
+          if (hasAuthKeyword) {
+            console.log('Authentication error detected in message:', errorMessage);
+            setIsAuthError(true);
+            isAuthRelatedError = true;
+            setError('Your session has expired. Please sign in again.');
+            setShowAuthModal(true);
+          } else {
+            // For non-auth errors, show regular error and toast
+            setError(errorMessage);
+            
+            // Don't show toast for rate limiting, just retry
+            if (!errorMessage.includes('Rate limited')) {
+              toast({
+                title: 'Error Loading Files',
+                description: errorMessage.length > 100 ? 
+                  `${errorMessage.substring(0, 100)}...` : errorMessage,
+                variant: 'destructive'
+              });
+            }
+          }
+        }
+        
+        // Implement exponential backoff for retries, but don't retry auth errors
+        if (currentRetryCount < 5 && isMountedRef.current && !isAuthRelatedError) {
+          const nextRetryCount = currentRetryCount + 1;
+          const retryDelay = Math.min(1000 * Math.pow(1.5, nextRetryCount), 10000);
+          
+          setRetryCount(nextRetryCount);
+          
+          console.log(`Retrying fetch (${nextRetryCount}/5) in ${retryDelay}ms`);
+          
+          fetchTimeoutRef.current = setTimeout(() => {
+            if (isMountedRef.current) {
+              fetchFiles(true, nextRetryCount);
+            }
+          }, retryDelay);
+        }
+      } finally {
+        cleanupRequest();
       }
     } finally {
       if (isMountedRef.current && !isRetry) {
@@ -202,11 +364,19 @@ export default function FileList({ onSelectFile, activeFileId, refreshTrigger = 
 
   // Trigger fetch when dependencies change
   useEffect(() => {
-    fetchFiles();
+    fetchFiles(false, 0);
   }, [fetchFiles, refreshTrigger]);
 
   const handleSelectFile = (fileId: string) => {
     onSelectFile(fileId);
+  };
+
+  const handleCloseAuthModal = () => {
+    setShowAuthModal(false);
+    // After successful sign-in, retry fetching files
+    setTimeout(() => {
+      fetchFiles(false, 0);
+    }, 500);
   };
 
   if (loading) {
@@ -226,14 +396,14 @@ export default function FileList({ onSelectFile, activeFileId, refreshTrigger = 
         
         {isAuthError ? (
           <button 
-            onClick={() => router.push('/auth/signin')} 
+            onClick={() => setShowAuthModal(true)} 
             className="mt-4 flex items-center px-3 py-1 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
           >
             <FiLogIn className="mr-1" /> Sign in again
           </button>
         ) : (
           <button 
-            onClick={() => fetchFiles()} 
+            onClick={() => fetchFiles(false, 0)} 
             className="mt-4 flex items-center px-3 py-1 text-sm bg-blue-100 text-blue-700 rounded hover:bg-blue-200 transition-colors"
           >
             <FiRefreshCw className="mr-1" /> Retry
@@ -253,8 +423,10 @@ export default function FileList({ onSelectFile, activeFileId, refreshTrigger = 
   }
 
   return (
-    <div className="overflow-y-auto max-h-[400px]">
-      <ul className="divide-y divide-gray-200 dark:divide-gray-800">
+    <>
+      <SessionExpiredModal isOpen={showAuthModal} onClose={handleCloseAuthModal} />
+      <div className="overflow-y-auto max-h-[400px]">
+        <ul className="divide-y divide-gray-200 dark:divide-gray-800">
         {files.map((file) => (
           <li 
             key={file.fileId}
@@ -289,7 +461,8 @@ export default function FileList({ onSelectFile, activeFileId, refreshTrigger = 
             </div>
           </li>
         ))}
-      </ul>
-    </div>
+        </ul>
+      </div>
+    </>
   );
 }

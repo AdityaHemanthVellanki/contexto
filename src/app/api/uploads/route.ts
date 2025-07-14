@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getFirestore } from '@/lib/firebase-admin';
-import { authenticateRequest } from '@/lib/api-auth';
 import { rateLimit } from '@/lib/rate-limiter';
+import { authenticateRequest } from '@/lib/api-auth';
 
 // Initialize Firebase Admin services
 const db = getFirestore();
@@ -23,49 +23,109 @@ export async function GET(request: NextRequest) {
     const auth = await authenticateRequest(request);
     
     if (!auth.authenticated) {
-      return auth.response;
+      return NextResponse.json({ 
+        message: 'Authentication required to access user uploads' 
+      }, { status: 401 });
     }
     
     const userId = auth.userId;
 
-    // Query uploads collection for user's files
-    const uploadsRef = db.collection('uploads');
-    const query = uploadsRef.where('userId', '==', userId).orderBy('uploadedAt', 'desc');
-    const snapshot = await query.get();
+    try {
+      // Verify database connection first
+      if (!db) {
+        throw new Error('Database connection unavailable');
+      }
 
-    const uploads = snapshot.docs.map(doc => {
-      const data = doc.data();
-      return {
-        fileId: doc.id,
-        fileName: data.fileName,
-        fileType: data.fileType,
-        fileSize: data.fileSize,
-        uploadedAt: data.uploadedAt ? data.uploadedAt.toDate() : new Date(),
-        status: data.status || 'ready'
-        // Note: fileContent is not returned in the list to reduce payload size
-        // It will be fetched separately when needed
-      };
-    });
+      // Query uploads collection for user's files
+      const uploadsRef = db.collection('uploads');
+      
+      // Simple defensive check to ensure collections exist
+      if (!uploadsRef) {
+        throw new Error('Uploads collection not accessible');
+      }
+      
+      const query = uploadsRef.where('userId', '==', userId).orderBy('uploadedAt', 'desc');
+      const snapshot = await query.get();
 
-    const response = NextResponse.json({ uploads });
-    
-    // Add rate limit headers to response
-    if (rateLimitResult.headers) {
-      Object.entries(rateLimitResult.headers).forEach(([key, value]) => {
-        response.headers.set(key, value as string);
+      const uploads = snapshot.docs.map(doc => {
+        const data = doc.data();
+        return {
+          fileId: doc.id,
+          fileName: data.fileName,
+          fileType: data.fileType,
+          fileSize: data.fileSize,
+          uploadedAt: data.uploadedAt ? data.uploadedAt.toDate() : new Date(),
+          status: data.status || 'ready'
+        };
       });
+      
+      const response = NextResponse.json({ uploads });
+      
+      // Add rate limit headers to response
+      if (rateLimitResult.headers) {
+        Object.entries(rateLimitResult.headers).forEach(([key, value]) => {
+          response.headers.set(key, value as string);
+        });
+      }
+      
+      return response;
+    } catch (firestoreError) {
+      // Handle specific Firestore errors
+      console.error('Firestore error:', firestoreError);
+      const errMsg = firestoreError instanceof Error ? firestoreError.message : String(firestoreError);
+      
+      // Authentication/credentials error
+      if (errMsg.includes('credential') || errMsg.includes('permission') || 
+          errMsg.includes('authentication') || errMsg.includes('auth')) {
+        return NextResponse.json({ 
+          message: 'Database authentication error. Server credentials are misconfigured.',
+          error: 'auth_error'
+        }, { status: 500 });
+      }
+      
+      // Not found error
+      if (errMsg.includes('not found') || errMsg.includes('exist')) {
+        return NextResponse.json({
+          message: 'The requested resource was not found',
+          error: 'not_found'
+        }, { status: 404 });
+      }
+
+      // Rate limiting or quota exceeded
+      if (errMsg.includes('quota') || errMsg.includes('rate') || errMsg.includes('limit')) {
+        return NextResponse.json({
+          message: 'Database quota exceeded or rate limit reached',
+          error: 'quota_exceeded'
+        }, { status: 429 });
+      }
+      
+      // Generic Firestore error
+      return NextResponse.json({ 
+        message: 'Database operation failed', 
+        error: 'db_error',
+        details: process.env.NODE_ENV === 'development' ? errMsg : undefined
+      }, { status: 500 });
     }
-    
-    return response;
   } catch (error) {
-    console.error('Error fetching uploads:', error);
-    const message = error instanceof Error ? error.message : 'Unknown error occurred';
+    // Handle general API errors
+    console.error('Error in uploads API:', error);
+    const message = error instanceof Error ? error.message : String(error);
     
-    // Check if it's an auth error
-    if (message.includes('auth')) {
-      return NextResponse.json({ message: `Unauthorized: ${message}` }, { status: 401 });
+    // User authentication error
+    if (message.toLowerCase().includes('auth') || 
+        message.toLowerCase().includes('token') || 
+        message.toLowerCase().includes('permission')) {
+      return NextResponse.json({ 
+        message: 'You are not authorized to access this resource',
+        error: 'unauthorized'
+      }, { status: 401 });
     }
     
-    return NextResponse.json({ message: `Failed to fetch uploads: ${message}` }, { status: 500 });
+    // General server error - don't expose internal details in production
+    return NextResponse.json({ 
+      message: 'An unexpected error occurred while processing your request',
+      error: 'server_error',
+      details: process.env.NODE_ENV === 'development' ? message : undefined
+    }, { status: 500 });
   }
 }

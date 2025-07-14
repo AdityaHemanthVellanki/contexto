@@ -274,38 +274,113 @@ export const parseJwt = (token: string): any => {
  */
 export const fetchWithAuth = async (url: string, options: RequestInit = {}): Promise<Response> => {
   let retryCount = 0;
-  const maxRetries = 2; // Allow more retries for better resilience
+  const maxRetries = 3; // Increased max retries for better resilience
   
-  // Try to refresh token preemptively if it might be expiring soon
-  await preemptiveTokenRefresh();
+  // Always ensure we have a valid user before proceeding
+  const currentUser = auth.currentUser;
   
-  async function attemptFetch(): Promise<Response> {
+  // Proactively refresh token when making authenticated requests
+  if (currentUser) {
     try {
-      const token = await getAuthToken();
+      // Check token expiration time before forcing refresh
+      const cachedToken = sessionStorage.getItem('authToken');
+      let shouldRefresh = true;
       
-      if (!token) {
-        console.warn('No token available, attempting to get a fresh one');
-        // Try to get a fresh token if current user exists
-        if (auth.currentUser) {
-          try {
-            const freshToken = await auth.currentUser.getIdToken(true);
-            sessionStorage.setItem('authToken', freshToken);
-            console.log('Successfully retrieved fresh token');
-          } catch (freshTokenError) {
-            console.error('Failed to get fresh token:', freshTokenError);
-            // Continue with request even without token - the API might handle this
+      // Only check expiration if token exists
+      if (cachedToken) {
+        const payload = parseJwt(cachedToken);
+        // Refresh if token will expire in 10 minutes or less
+        if (payload && payload.exp) {
+          const expiryTime = payload.exp * 1000;
+          const timeRemaining = expiryTime - Date.now();
+          shouldRefresh = timeRemaining < 10 * 60 * 1000; // 10 minutes
+          if (shouldRefresh) {
+            console.log(`Token will expire in ${Math.round(timeRemaining/1000)}s, refreshing...`);
           }
         }
       }
       
-      // Get token again (might have been refreshed above)
-      const finalToken = await getAuthToken();
-      
-      // Create headers with auth token if available
-      const headers = new Headers(options.headers);
-      if (finalToken) {
-        headers.set('Authorization', `Bearer ${finalToken}`);
+      // Only force refresh if needed to avoid excessive calls
+      if (shouldRefresh) {
+        const token = await currentUser.getIdToken(true);
+        sessionStorage.setItem('authToken', token);
+        console.log('Token refreshed before API call');
       }
+    } catch (refreshError) {
+      console.error('Error refreshing token before API call:', refreshError);
+      // Continue with potentially cached token even if refresh fails
+    }
+  } else {
+    // If no user, try to refresh the page session if we're in a browser context
+    if (typeof window !== 'undefined') {
+      console.warn('No current user found when making authenticated request');
+    }
+  }
+  
+  async function attemptFetch(): Promise<Response> {
+    try {
+      // Check if user is logged in first
+      if (!currentUser) {
+        console.warn('No authenticated user found');
+        return new Response(JSON.stringify({
+          error: true,
+          message: 'Authentication required. Please sign in.',
+          code: 'AUTH_REQUIRED'
+        }), {
+          status: 401,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      // Get latest token
+      const token = await getAuthToken();
+      
+      // If we've already retried, let's immediately attempt to refresh the token
+      if (retryCount > 0 && token && currentUser) {
+        try {
+          // Force a token refresh
+          const refreshedToken = await currentUser.getIdToken(true);
+          sessionStorage.setItem('authToken', refreshedToken);
+          // Use the refreshed token instead
+          return fetch(url, {
+            ...options,
+            headers: new Headers({
+              ...options.headers,
+              'Authorization': `Bearer ${refreshedToken}`
+            })
+          });
+        } catch (refreshError) {
+          console.log('Failed to force refresh token after retry:', refreshError);
+          // Continue with the token we have
+        }
+      }
+      
+      if (!token) {
+        console.warn('No token available, forcing token refresh');
+        // Always force token refresh if no token available
+        try {
+          const freshToken = await currentUser.getIdToken(true);
+          sessionStorage.setItem('authToken', freshToken);
+          console.log('Successfully retrieved fresh token');
+          
+          // Use the new token for this request
+          const headers = new Headers(options.headers);
+          headers.set('Authorization', `Bearer ${freshToken}`);
+          
+          // Make the API request with the fresh token
+          return fetch(url, {
+            ...options,
+            headers
+          });
+        } catch (freshTokenError) {
+          console.error('Failed to get fresh token:', freshTokenError);
+          throw new Error('Authentication error. Unable to refresh authentication token.');
+        }
+      }
+      
+      // Create headers with auth token
+      const headers = new Headers(options.headers);
+      headers.set('Authorization', `Bearer ${token}`);
       
       // Make the API request with auth header
       const response = await fetch(url, {
@@ -313,44 +388,56 @@ export const fetchWithAuth = async (url: string, options: RequestInit = {}): Pro
         headers
       });
       
-      // Handle 401 Unauthorized and 403 Forbidden errors
-      if (response.status === 401 || response.status === 403) {
+      // Special handling for 401 Unauthorized errors
+      if (response.status === 401) {
+        // For any 401, attempt token refresh once regardless of error details
         if (retryCount < maxRetries) {
-          console.log(`${response.status} error detected, forcing token refresh... (attempt ${retryCount + 1})`);
           retryCount++;
+          console.log(`Authentication error (401) detected, forcing token refresh... (attempt ${retryCount}/${maxRetries})`);
           
-          // Force token refresh with exponential backoff
-          const backoffMs = Math.min(1000 * (2 ** retryCount), 5000);
-          await new Promise(resolve => setTimeout(resolve, backoffMs));
-          
-          const user = auth.currentUser;
-          if (user) {
-            try {
-              // Force get a new token
-              const newToken = await user.getIdToken(true);
-              console.log('Token refreshed successfully, retrying request');
-              sessionStorage.setItem('authToken', newToken);
-              
-              // Clear any cached responses for this URL
-              await clearCacheForUrl(url);
-              
-              // Retry the fetch with new token
-              return attemptFetch();
-            } catch (refreshError) {
-              console.error('Failed to refresh token:', refreshError);
-              // Instead of throwing error, we'll try to continue anyway
-              // Sometimes the request can succeed even with auth errors
-            }
+          try {
+            // Force token refresh with exponential backoff
+            const backoffMs = Math.min(1000 * (2 ** retryCount), 5000);
+            await new Promise(resolve => setTimeout(resolve, backoffMs));
+            
+            // Force get a new token
+            const newToken = await currentUser.getIdToken(true);
+            console.log('Token refreshed successfully, retrying request');
+            sessionStorage.setItem('authToken', newToken);
+            
+            // Clear any cached responses for this URL
+            await clearCacheForUrl(url);
+            
+            // Retry the fetch with new token
+            return attemptFetch();
+          } catch (refreshError) {
+            console.error('Failed to refresh token:', refreshError);
+            // Return a special response that indicates auth error but doesn't force logout
+            return new Response(JSON.stringify({
+              error: true,
+              code: 'SESSION_EXPIRED',
+              message: 'Your session has expired. Please sign in again.'
+            }), {
+              status: 401,
+              headers: { 'Content-Type': 'application/json' }
+            });
           }
         } else {
           console.error('Max token refresh retries exceeded');
-          // Don't throw here - let the API response return to the caller
-          // This prevents unnecessary redirects to login
+          // Return auth error but don't force logout
+          return new Response(JSON.stringify({
+            error: true,
+            code: 'SESSION_EXPIRED',
+            message: 'Your session has expired after multiple retry attempts. Please sign in again.'
+          }), {
+            status: 401,
+            headers: { 'Content-Type': 'application/json' }
+          });
         }
       }
       
       // For other non-2xx errors
-      if (!response.ok && response.status !== 401 && response.status !== 403) {
+      if (!response.ok && response.status !== 401) {
         console.error(`API request failed: ${response.status} ${response.statusText || ''}`);
         // Don't throw - return the response and let the caller handle it
       }
@@ -359,19 +446,18 @@ export const fetchWithAuth = async (url: string, options: RequestInit = {}): Pro
     } catch (error) {
       console.error('Error in fetchWithAuth:', error);
       
-      // Create a more user-friendly error response instead of throwing
-      // This prevents components from crashing and allows for graceful handling
+      // Check if we have a specific auth error message to display
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred during request';
+      
+      // Create a more user-friendly error response
       const errorResponse = new Response(JSON.stringify({
         error: true,
-        message: error instanceof Error ? error.message : 'Unknown error occurred',
-        code: 'FETCH_ERROR'
+        message: errorMessage,
+        code: errorMessage.includes('Authentication') ? 'AUTH_ERROR' : 'FETCH_ERROR'
       }), {
-        status: 500,
+        status: errorMessage.includes('Authentication') ? 401 : 500,
         headers: { 'Content-Type': 'application/json' }
       });
-      
-      // Add custom property to identify this as a handled error
-      Object.defineProperty(errorResponse, 'isHandledError', { value: true });
       
       return errorResponse;
     }

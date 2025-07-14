@@ -1,16 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAuth } from 'firebase-admin/auth';
 import { getFirestore, Timestamp } from 'firebase-admin/firestore';
-import { getStorage } from 'firebase-admin/storage';
 import { app } from '@/lib/firebase';
 import { extractText } from '@/lib/textExtraction';
 import { createEmbeddings } from '@/lib/embeddings';
+import { r2, R2_BUCKET } from '@/lib/r2';
+import { GetObjectCommand } from '@aws-sdk/client-s3';
+import { createWriteStream, promises as fs } from 'fs';
+import { pipeline } from 'stream/promises';
 
 // Initialize Firebase Admin services
 const auth = getAuth(app);
 const db = getFirestore(app);
-const storage = getStorage(app);
-const bucket = storage.bucket();
 
 export async function POST(request: NextRequest) {
   try {
@@ -127,13 +128,38 @@ export async function POST(request: NextRequest) {
     await pipelineRef.set(pipelineConfig);
 
     // Process the document based on file type
-    // 1. Download the file
-    const filePath = uploadData.filePath;
-    const tempFilePath = `/tmp/${fileId}`;
+    // 1. Download the file from R2
+    const r2Key = uploadData.r2Key || `${userId}/uploads/${uploadData.fileName}`;
+    const tempFilePath = `/tmp/${fileId}_${uploadData.fileName}`;
     
-    await bucket.file(filePath).download({
-      destination: tempFilePath
-    });
+    try {
+      // Fetch object from R2
+      const getObjectResponse = await r2.send(
+        new GetObjectCommand({
+          Bucket: R2_BUCKET,
+          Key: r2Key,
+        })
+      );
+      
+      // Create local file from stream
+      if (getObjectResponse.Body) {
+        // Create the directory if it doesn't exist
+        await fs.mkdir('/tmp', { recursive: true }).catch(() => {});
+        
+        // Create a write stream to the temp file
+        const writeStream = createWriteStream(tempFilePath);
+        
+        // Use the pipeline to pipe the response body to the file
+        await pipeline(getObjectResponse.Body as NodeJS.ReadableStream, writeStream);
+        
+        console.log(`File downloaded from R2: ${r2Key} to ${tempFilePath}`);
+      } else {
+        throw new Error('Empty response body from R2');
+      }
+    } catch (downloadError) {
+      console.error('Error downloading file from R2:', downloadError);
+      throw new Error(`Failed to download file from R2: ${downloadError instanceof Error ? downloadError.message : 'Unknown error'}`);
+    }
 
     // 2. Extract text based on file type
     const fileContent = await extractText(tempFilePath, uploadData.fileType);

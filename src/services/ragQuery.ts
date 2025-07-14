@@ -48,6 +48,11 @@ export async function runRAGQuery(chunks: string[], question: string, userId: st
     const totalText = messages.reduce((acc, msg) => acc + msg.content.length, 0);
     const selectedModel = totalText > 12000 ? modelMapping.omni : modelMapping.turbo;
 
+    // Ensure client is initialized
+    if (!client) {
+      throw new Error('Azure OpenAI client is not initialized');
+    }
+    
     // Call Azure OpenAI chat completions API
     const response = await client.chat.completions.create({
       model: selectedModel as string,

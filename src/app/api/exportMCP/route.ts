@@ -1,27 +1,37 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getAuth } from 'firebase-admin/auth';
-import { getFirestore } from 'firebase-admin/firestore';
-import { getStorage } from 'firebase-admin/storage';
-import { app } from '@/lib/firebase';
+import { getAuth, getFirestore } from '@/lib/firebase-admin';
+import { authenticateRequest } from '@/lib/api-auth';
+import { rateLimit } from '@/lib/rate-limiter';
+import { r2, R2_BUCKET } from '@/lib/r2';
+import { PutObjectCommand } from '@aws-sdk/client-s3';
+import * as admin from 'firebase-admin';
 import JSZip from 'jszip';
 
 // Initialize Firebase Admin services
-const auth = getAuth(app);
-const db = getFirestore(app);
-const storage = getStorage(app);
-const bucket = storage.bucket();
+const db = getFirestore();
+const FieldValue = admin.firestore.FieldValue;
 
 export async function POST(request: NextRequest) {
   try {
-    // Verify authentication token
-    const authHeader = request.headers.get('authorization');
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return NextResponse.json({ message: 'Unauthorized: Missing or invalid token' }, { status: 401 });
+    // Apply rate limiting - 5 requests per 30 seconds per user/IP
+    const rateLimitResult = await rateLimit(request, {
+      limit: 5,
+      windowSizeInSeconds: 30
+    });
+    
+    // Return rate limit response if limit exceeded
+    if (rateLimitResult.limited && rateLimitResult.response) {
+      return rateLimitResult.response;
     }
-
-    const token = authHeader.split('Bearer ')[1];
-    const decodedToken = await auth.verifyIdToken(token);
-    const userId = decodedToken.uid;
+    
+    // Authenticate request
+    const auth = await authenticateRequest(request);
+    
+    if (!auth.authenticated) {
+      return auth.response;
+    }
+    
+    const userId = auth.userId;
 
     if (!userId) {
       return NextResponse.json({ message: 'Unauthorized: Invalid user' }, { status: 401 });
@@ -270,24 +280,29 @@ app.listen(PORT, () => {
     const exportFileName = `contexto-mcp-${fileId}-${timestamp}.zip`;
     const exportPath = `users/${userId}/exports/${exportFileName}`;
     
-    // Upload to Firebase Storage
-    const fileRef = bucket.file(exportPath);
-    await fileRef.save(Buffer.from(buffer), {
-      contentType: 'application/zip',
-      metadata: {
-        customMetadata: {
-          userId,
-          fileId,
-          exportedAt: timestamp.toString(),
-        },
-      },
-    });
+    // Upload to Cloudflare R2 instead of Firebase Storage
+    const r2Key = `${userId}/exports/${exportFileName}`;
     
-    // Get download URL
-    const [exportUrl] = await fileRef.getSignedUrl({
-      action: 'read',
-      expires: '01-01-2100', // Long expiration
-    });
+    try {
+      await r2.send(
+        new PutObjectCommand({
+          Bucket: R2_BUCKET,
+          Key: r2Key,
+          Body: Buffer.from(buffer),
+          ContentType: 'application/zip'
+        })
+      );
+      
+      console.log(`MCP export successfully uploaded to R2: ${r2Key}`);
+    } catch (r2Error) {
+      console.error('Error uploading to R2:', r2Error);
+      throw new Error(`Failed to upload export to R2: ${r2Error instanceof Error ? r2Error.message : 'Unknown error'}`);
+    }
+    
+    // Generate R2 file URL
+    const exportUrl = process.env.CF_R2_ENDPOINT 
+      ? `${process.env.CF_R2_ENDPOINT}/${R2_BUCKET}/${encodeURIComponent(r2Key)}`
+      : `https://${R2_BUCKET}.r2.cloudflarestorage.com/${encodeURIComponent(r2Key)}`;
     
     // Store metadata in Firestore exports collection
     const exportRef = db.collection('exports').doc(exportId);
@@ -298,8 +313,10 @@ app.listen(PORT, () => {
       pipelineId: fileId, // Using fileId as pipelineId for now
       fileName: `${uploadData?.fileName || 'Document'} MCP Server`,
       exportUrl,
-      exportPath,
-      exportedAt: new Date(), // Server timestamp
+      r2Key, // Store R2 key instead of Firebase path
+      fileSize: buffer.byteLength,
+      contentType: 'application/zip',
+      exportedAt: FieldValue.serverTimestamp(),
       exportType: 'mcp',
     });
     

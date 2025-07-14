@@ -1,5 +1,11 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  // API configuration to support large file uploads
+  api: {
+    bodyParser: {
+      sizeLimit: '50mb',
+    },
+  },
   reactStrictMode: true,
   env: {
     // Only expose NEXT_PUBLIC_* variables to the browser
