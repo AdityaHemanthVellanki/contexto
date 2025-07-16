@@ -45,6 +45,7 @@ export default function DashboardPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
   const [activeDataTab, setActiveDataTab] = useState<'files' | 'exports'>('files');
+  const [hasFilesLoaded, setHasFilesLoaded] = useState(false);
   
   // Set isLoading to false after initialization
   useEffect(() => {
@@ -144,7 +145,17 @@ export default function DashboardPage() {
   // Handle file selection
   const handleFileSelect = (fileId: string) => {
     setActiveFileId(fileId);
+    setImportedData(true); // Mark that we have imported data when a file is selected
   };
+  
+  // Add effect to handle hasFilesLoaded state
+  useEffect(() => {
+    if (hasFilesLoaded && !activeFileId) {
+      // This will trigger a refresh of the file list
+      // which will auto-select the first file
+      setRefreshTrigger(prev => prev + 1);
+    }
+  }, [hasFilesLoaded, activeFileId]);
 
   // Show loading state with skeleton
   if (authLoading || isLoading) {
@@ -233,6 +244,14 @@ export default function DashboardPage() {
                           onSelectFile={handleFileSelect}
                           activeFileId={activeFileId}
                           refreshTrigger={refreshTrigger}
+                          onFilesLoaded={(hasFiles) => {
+                            // Update importedData state when files are loaded
+                            setImportedData(hasFiles);
+                            if (hasFiles && !activeFileId) {
+                              // Auto-select the first file if none is selected
+                              setHasFilesLoaded(true);
+                            }
+                          }}
                         />
                       </motion.div>
                     ) : (

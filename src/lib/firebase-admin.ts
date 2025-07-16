@@ -1,169 +1,94 @@
 import * as admin from 'firebase-admin';
 import { getApps, initializeApp, cert, AppOptions } from 'firebase-admin/app';
-import { configureFirebaseAdminEmulators } from './firebase-emulator';
+import { debugEnvironment } from './env-debug';
+import { getFirebaseAdminConfig } from './firebase-admin-config';
 
 /**
  * Initialize Firebase Admin SDK
- * Uses environment variables for configuration with robust fallbacks for development
+ * Uses configuration from environment variables or firebase-admin-config helper
  */
 export function getFirebaseAdmin() {
   // Check if Firebase Admin is already initialized
   if (admin.apps.length > 0) {
     return admin;
   }
-
-  // Configure emulators only in development environment
-  if (process.env.NODE_ENV === 'development') {
-    console.log('Firebase Admin initializing in development mode');
-    if (process.env.FIREBASE_USE_EMULATORS === 'true') {
-      configureFirebaseAdminEmulators();
+  
+  // Print environment debug information to help troubleshoot
+  debugEnvironment();
+  console.log('Firebase Admin initialization - Environment check');
+  
+  // Get admin configuration with fallbacks
+  const config = getFirebaseAdminConfig();
+  
+  // Detailed logging for troubleshooting
+  console.log(`Firebase Project ID: ${config.projectId ? 'Found' : 'Missing'}`);
+  console.log(`Firebase Client Email: ${config.clientEmail ? 'Found' : 'Missing'}`);
+  console.log(`Firebase Private Key: ${config.privateKey ? 'Found (length: ' + config.privateKey.length + ')' : 'Missing'}`);
+  
+  // Try to handle missing variables gracefully
+  if (!config.projectId) {
+    console.error('Firebase project ID is missing. Please check your environment configuration.');
+    if (process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID) {
+      console.log('Falling back to NEXT_PUBLIC_FIREBASE_PROJECT_ID:', process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID);
+      config.projectId = process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID;
+    } else {
+      throw new Error('Firebase project ID is required but not available in any configuration.');
     }
   }
   
   try {
-    // Get project ID from environment variables - use public var as fallback
-    const projectId = process.env.FIREBASE_PROJECT_ID || process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID;
-    if (!projectId) {
-      throw new Error('Firebase project ID is required. Set FIREBASE_PROJECT_ID environment variable.');
-    }
-    
-    const options: AppOptions = { projectId };
-    let credentialSet = false;
-    
-    // Primary method: Use service account JSON from environment variable
-    if (process.env.FIREBASE_SERVICE_ACCOUNT) {
-      try {
-        // Handle both stringified JSON and direct object format
-        let serviceAccount: any;
-        if (typeof process.env.FIREBASE_SERVICE_ACCOUNT === 'string') {
-          try {
-            serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-          } catch (parseError) {
-            // If it's not valid JSON, it might be a path to a file
-            if (process.env.FIREBASE_SERVICE_ACCOUNT.endsWith('.json')) {
-              // Treat as path to credential file
-              options.credential = admin.credential.cert(process.env.FIREBASE_SERVICE_ACCOUNT);
-              credentialSet = true;
-            } else {
-              throw new Error(`FIREBASE_SERVICE_ACCOUNT contains invalid JSON and is not a file path`);
-            }
-          }
-        } else {
-          serviceAccount = process.env.FIREBASE_SERVICE_ACCOUNT;
-        }
-        
-        // If we parsed the JSON but haven't set credentials yet
-        if (!credentialSet && serviceAccount) {
-          // Validate required service account fields
-          if (!serviceAccount.project_id || !serviceAccount.private_key || !serviceAccount.client_email) {
-            throw new Error('Service account JSON is missing required fields (project_id, private_key, or client_email)');
-          }
-          
-          options.credential = admin.credential.cert(serviceAccount);
-          credentialSet = true;
-        }
-        
-        if (process.env.FIREBASE_DATABASE_URL) {
-          options.databaseURL = process.env.FIREBASE_DATABASE_URL;
-        }
-      } catch (e) {
-        console.error('Error with FIREBASE_SERVICE_ACCOUNT:', e);
-        // Don't throw yet - try other credential methods
-      }
-    } 
-    
-    // Secondary method: Use Google Application Default Credentials from path
-    if (!credentialSet && process.env.GOOGLE_APPLICATION_CREDENTIALS) {
-      try {
-        // This can be a path to a JSON file
-        if (typeof process.env.GOOGLE_APPLICATION_CREDENTIALS === 'string' && 
-            process.env.GOOGLE_APPLICATION_CREDENTIALS.endsWith('.json')) {
-          options.credential = admin.credential.cert(process.env.GOOGLE_APPLICATION_CREDENTIALS);
-        } else {
-          // Or it can be used with applicationDefault()
-          options.credential = admin.credential.applicationDefault();
-        }
-        credentialSet = true;
-      } catch (e) {
-        console.error('Error with GOOGLE_APPLICATION_CREDENTIALS:', e);
-        // Don't throw yet - try other credential methods
-      }
-    }
-    
-    // Tertiary method: Try to use application default credentials
-    if (!credentialSet) {
-      try {
-        if (process.env.NODE_ENV === 'development') {
-          console.log('Creating mock credentials for local development');
-          // Create mock credentials for local development
-          options.credential = admin.credential.cert({
-            projectId: 'contexto-local-dev',
-            clientEmail: 'firebase-adminsdk-local@contexto-local-dev.iam.gserviceaccount.com',
-            privateKey: '-----BEGIN PRIVATE KEY-----\nMIIEugIBADANBgkqhkiG9w0BAQEFAASCBKQwggSgAgEAAoIBAQCsXXjI5xQqp9wR\n-----END PRIVATE KEY-----\n'
-          });
-          credentialSet = true;
-        } else {
-          options.credential = admin.credential.applicationDefault();
-          credentialSet = true;
-        }
-      } catch (e) {
-        console.error('Error setting up Firebase Admin credentials:', e);
-        if (process.env.NODE_ENV === 'development') {
-          // In development, create mock credentials as last resort
-          console.warn('Falling back to mock credentials for development');
-          options.credential = admin.credential.cert({
-            projectId: 'contexto-local-dev',
-            clientEmail: 'firebase-adminsdk-local@contexto-local-dev.iam.gserviceaccount.com',
-            privateKey: '-----BEGIN PRIVATE KEY-----\nMIIEugIBADANBgkqhkiG9w0BAQEFAASCBKQwggSgAgEAAoIBAQCsXXjI5xQqp9wR\n-----END PRIVATE KEY-----\n'
-          });
-          credentialSet = true;
-        } else {
-          // In production, we should fail if no credentials are available
-          throw new Error(`No Firebase credentials found: ${e instanceof Error ? e.message : String(e)}`);
-        }
-      }
-    }
-    
-    // Final check before initialization
-    if (!credentialSet || !options.credential) {
-      throw new Error('Could not load Firebase Admin credentials from any source');
-    }
-    
-    // Initialize the app
-    try {
-      admin.initializeApp(options);
-    } catch (initError) {
-      console.error('Error initializing Firebase Admin app:', initError);
-      throw new Error(`Firebase Admin initialization failed: ${initError instanceof Error ? initError.message : String(initError)}`);
-    }
-    
-    // Verify connectivity to Firebase services
-    try {
-      // Test Firestore access - will throw if credentials are invalid
-      const firestore = admin.firestore();
+    // For development environment, we can use the Firebase emulators
+    if (process.env.NODE_ENV === 'development' && process.env.FIREBASE_AUTH_EMULATOR_HOST) {
+      console.log('Using Firebase emulator for development');
+      process.env.FIREBASE_AUTH_EMULATOR_HOST = process.env.FIREBASE_AUTH_EMULATOR_HOST || 'localhost:9099';
+      process.env.FIRESTORE_EMULATOR_HOST = process.env.FIRESTORE_EMULATOR_HOST || 'localhost:8080';
       
-      // Optional: Perform a simple test query to verify connectivity
-      // This isn't necessary but helps catch connection issues early
-      if (process.env.VERIFY_FIRESTORE_CONNECTION === 'true') {
-        // We don't need to await this, just checking if it throws
-        firestore.collection('_connection_test').limit(1).get();
-      }
+      admin.initializeApp({
+        projectId: config.projectId
+      });
       
-      // If we got here, initialization was successful
+      console.log('Firebase Admin SDK initialized with emulator settings');
       return admin;
-    } catch (verifyError) {
-      console.error('Failed to verify Firebase services access:', verifyError);
-      throw new Error(`Firebase Admin services verification failed: ${verifyError instanceof Error ? verifyError.message : String(verifyError)}`);
     }
-  } catch (error) {
-    // Log detailed error information
-    console.error('Failed to initialize Firebase Admin SDK:', error);
     
-    // Never continue without proper initialization
-    throw new Error(`Firebase Admin initialization failed: ${error instanceof Error ? error.message : String(error)}. ` + 
-      'Please ensure Firebase service account credentials are properly configured. ' +
-      'Set either FIREBASE_SERVICE_ACCOUNT environment variable with the JSON content, ' +
-      'or GOOGLE_APPLICATION_CREDENTIALS pointing to your service account file.');
+    // For production, we need proper credentials
+    if (!config.clientEmail || !config.privateKey) {
+      console.error('Firebase Admin SDK credentials incomplete:');
+      console.error('- Client Email:', config.clientEmail ? 'Present' : 'Missing');
+      console.error('- Private Key:', config.privateKey ? 'Present' : 'Missing');
+      
+      // Special case for Vercel/Netlify/etc. where we might need to parse private key differently
+      if (process.env.FIREBASE_PRIVATE_KEY && !config.privateKey) {
+        config.privateKey = process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n');
+        console.log('Reformatted private key from environment variable');
+      } else if (process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID && !process.env.FIREBASE_PRIVATE_KEY) {
+        // Try creating a temporary application configuration for simple operations
+        // This won't have full admin privileges but might work for some operations
+        console.log('Creating temporary app configuration with limited functionality');
+        admin.initializeApp({
+          projectId: config.projectId
+        });
+        console.warn('⚠️ Firebase Admin initialized WITHOUT admin credentials. Some operations may fail.');
+        return admin;
+      } else {
+        throw new Error('Firebase Admin SDK requires valid client email and private key.');
+      }
+    }
+    
+    // Initialize Firebase Admin with explicit credentials
+    admin.initializeApp({
+      credential: cert({
+        projectId: config.projectId,
+        clientEmail: config.clientEmail,
+        privateKey: config.privateKey
+      }),
+    });
+    
+    console.log('Firebase Admin SDK initialized successfully');
+    return admin;
+  } catch (error) {
+    console.error('Failed to initialize Firebase Admin SDK:', error);
+    throw new Error(`Firebase Admin initialization failed: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 

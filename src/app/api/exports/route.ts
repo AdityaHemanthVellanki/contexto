@@ -1,13 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getFirestore } from '@/lib/firebase-admin';
-import * as admin from 'firebase-admin';
+import { getFirebaseAdmin } from '@/lib/firebase-admin';
 import { authenticateRequest } from '@/lib/api-auth';
-import { rateLimit } from '@/lib/rate-limiter';
+import { rateLimit } from '@/lib/rate-limiter-memory';
 import { r2, R2_BUCKET } from '@/lib/r2';
 import { PutObjectCommand } from '@aws-sdk/client-s3';
 
 // Initialize Firebase Admin services
 const db = getFirestore();
+const admin = getFirebaseAdmin();
 const FieldValue = admin.firestore.FieldValue;
 
 export async function POST(request: NextRequest) {
@@ -19,8 +20,11 @@ export async function POST(request: NextRequest) {
     });
     
     // Return rate limit response if limit exceeded
-    if (rateLimitResult.limited && rateLimitResult.response) {
-      return rateLimitResult.response;
+    if (rateLimitResult.limited) {
+      return rateLimitResult.response || NextResponse.json(
+        { message: 'Rate limit exceeded', error: 'rate_limited' },
+        { status: 429 }
+      );
     }
     
     // Authenticate request
@@ -147,8 +151,11 @@ export async function GET(request: NextRequest) {
     });
     
     // Return rate limit response if limit exceeded
-    if (rateLimitResult.limited && rateLimitResult.response) {
-      return rateLimitResult.response;
+    if (rateLimitResult.limited) {
+      return rateLimitResult.response || NextResponse.json(
+        { message: 'Rate limit exceeded', error: 'rate_limited' },
+        { status: 429 }
+      );
     }
     
     // Authenticate request
@@ -167,15 +174,24 @@ export async function GET(request: NextRequest) {
 
     const exports = snapshot.docs.map(doc => {
       const data = doc.data();
+      // Safely handle the timestamp conversion
+      let exportedAt;
+      try {
+        exportedAt = data.exportedAt && typeof data.exportedAt.toDate === 'function' 
+          ? data.exportedAt.toDate() 
+          : new Date();
+      } catch (e) {
+        console.warn('Error converting timestamp for export', doc.id, e);
+        exportedAt = new Date();
+      }
+      
       return {
         exportId: doc.id,
-        pipelineId: data.pipelineId,
+        pipelineId: data.pipelineId || '',
         fileName: data.fileName || 'MCP Export',
-        contentType: data.contentType || 'application/zip',
+        contentType: data.contentType || 'application/json',
         fileSize: data.fileSize || 0,
-        exportedAt: data.exportedAt ? data.exportedAt.toDate() : new Date()
-        // Note: exportContent is not returned in the list to reduce payload size
-        // It will be fetched separately when needed via the /api/export/[exportId] endpoint
+        exportedAt: exportedAt
       };
     });
     

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getFirestore } from '@/lib/firebase-admin';
-import { rateLimit } from '@/lib/rate-limiter';
+import { rateLimit } from '@/lib/rate-limiter-memory';
 import { authenticateRequest } from '@/lib/api-auth';
 
 // Initialize Firebase Admin services
@@ -15,8 +15,11 @@ export async function GET(request: NextRequest) {
     });
     
     // Return rate limit response if limit exceeded
-    if (rateLimitResult.limited && rateLimitResult.response) {
-      return rateLimitResult.response;
+    if (rateLimitResult.limited) {
+      return rateLimitResult.response || NextResponse.json(
+        { message: 'Rate limit exceeded', error: 'rate_limited' },
+        { status: 429 }
+      );
     }
     
     // Authenticate request

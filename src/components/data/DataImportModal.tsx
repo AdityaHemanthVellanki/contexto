@@ -98,31 +98,63 @@ export default function DataImportModal({
         setShowAuthModal(true);
         throw new Error('Authentication required');
       }
-      const response = await fetch('/api/ingest', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${idToken}`
-        },
-        body: JSON.stringify({ fileId })
-      });
       
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.message || 'Failed to ingest data');
+      // Always close the modal after successful upload, regardless of ingestion success
+      // This prevents the UI from getting stuck if ingestion fails
+      setTimeout(() => {
+        onImportSuccess(fileId);
+        onClose();
+      }, 1500);
+      
+      try {
+        const response = await fetch('/api/ingest', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${idToken}`
+          },
+          body: JSON.stringify({ fileId })
+        });
+        
+        if (!response.ok) {
+          let errorMessage = 'Unknown server error';
+        
+          try {
+            const errorData = await response.json();
+            errorMessage = errorData.message || 'Server error during ingestion';
+            console.error('Ingestion API error:', errorData);
+          } catch (parseError) {
+            console.error('Failed to parse error response:', parseError);
+            errorMessage = `Server error (${response.status}): ${response.statusText}`;
+          }
+        
+          toast({
+            title: 'Processing Issue',
+            description: `File was uploaded but there was an issue: ${errorMessage}`,
+            variant: 'default',
+            duration: 5000
+          });
+          return;
+        }
+        
+        await response.json(); // Parse but we don't need the result
+        
+        // Success
+        toast({
+          title: 'Data Ready',
+          description: `Your data has been processed and is ready to use.`,
+          variant: 'success',
+          duration: 5000
+        });
+      } catch (ingestionErr) {
+        console.error('Ingestion error:', ingestionErr);
+        toast({
+          title: 'Upload Successful',
+          description: 'File was uploaded but processing will continue in the background.',
+          variant: 'default',
+          duration: 5000
+        });
       }
-      
-      await response.json(); // Parse but we don't need the result
-      
-      // Success
-      onImportSuccess(fileId);
-      onClose();
-      toast({
-        title: 'Data Ready',
-        description: `Your data has been processed and is ready to use.`,
-        variant: 'success',
-        duration: 5000
-      });
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'An unknown error occurred during ingestion';
       setError(errorMessage);
@@ -175,9 +207,9 @@ export default function DataImportModal({
         headers: {
           'Authorization': `Bearer ${idToken}`,
           'Content-Type': 'application/octet-stream',
-          'X-File-Name': encodeURIComponent(file.name),
-          'X-File-Type': file.type || 'application/octet-stream',
-          'X-File-Size': file.size.toString(),
+          'x-filename': encodeURIComponent(file.name),
+          'x-mimetype': file.type || 'application/octet-stream',
+          'x-filesize': file.size.toString(),
         },
         body: file,
       });

@@ -1,17 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getAuth } from 'firebase-admin/auth';
-import { getFirestore } from 'firebase-admin/firestore';
-import { app } from '@/lib/firebase';
+import { getAuth, getFirestore } from '@/lib/firebase-admin';
 
 // Initialize Firebase Admin services
-const auth = getAuth(app);
-const db = getFirestore(app);
+const auth = getAuth();
+const db = getFirestore();
 
 /**
  * API endpoint to migrate files from Firebase Storage to Firestore
  * This is a server-side implementation of the migration process
  */
-export async function POST(request: NextRequest) {
+export async function POST(request: NextRequest) {;
   try {
     // Verify authentication token
     const authHeader = request.headers.get('authorization');

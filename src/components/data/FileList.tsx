@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { FiFile, FiLoader, FiRefreshCw, FiLogIn } from 'react-icons/fi';
+import { FiFile, FiLoader, FiRefreshCw, FiLogIn, FiTrash2, FiMessageSquare } from 'react-icons/fi';
 import { useAuth } from '@/context/AuthContext';
 import { useToast } from '@/components/ui/toast';
 import { Button } from '@/components/ui/button';
@@ -21,15 +21,27 @@ interface FileListProps {
   onSelectFile: (fileId: string) => void;
   activeFileId?: string;
   refreshTrigger?: number;
+  onFilesLoaded?: (hasFiles: boolean) => void;
+  selectionMode?: 'default' | 'mcp';
+  onSelectForMCP?: (fileId: string) => void;
 }
 
-export default function FileList({ onSelectFile, activeFileId, refreshTrigger = 0 }: FileListProps) {
+export default function FileList({ 
+  onSelectFile, 
+  activeFileId, 
+  refreshTrigger = 0, 
+  onFilesLoaded,
+  selectionMode = 'default',
+  onSelectForMCP
+}: FileListProps) {
   const [files, setFiles] = useState<FileItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isAuthError, setIsAuthError] = useState(false);
   const [retryCount, setRetryCount] = useState(0);
   const [showAuthModal, setShowAuthModal] = useState(false);
+  const [deletingFileId, setDeletingFileId] = useState<string | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
   const { user } = useAuth();
   const { toast } = useToast();
   const router = useRouter();
@@ -48,6 +60,14 @@ export default function FileList({ onSelectFile, activeFileId, refreshTrigger = 
         clearTimeout(fetchTimeoutRef.current);
       }
     };
+  }, []);
+
+  // Function to clean up any pending requests
+  const cleanupRequest = useCallback(() => {
+    if (fetchTimeoutRef.current) {
+      clearTimeout(fetchTimeoutRef.current);
+      fetchTimeoutRef.current = null;
+    }
   }, []);
 
   // Debounced fetch function with exponential backoff for retries
@@ -114,118 +134,56 @@ export default function FileList({ onSelectFile, activeFileId, refreshTrigger = 
     // Update last fetch time
     lastFetchTimeRef.current = now;
     
-    if (!isRetry) {
+    // Only show loading indicator for initial fetch, not retries
+    if (!isRetry && isMountedRef.current) {
       setLoading(true);
-      setError(null);
     }
-
+    
     try {
-      // Use our authenticated fetch utility with automatic token refresh
-      const abortController = new AbortController();
-      let timeoutId: NodeJS.Timeout | null = null;
+      const response = await fetchWithAuth('/api/uploads');
       
-      const cleanupRequest = () => {
-        if (timeoutId) {
-          clearTimeout(timeoutId);
-          timeoutId = null;
-        }
-      };
-      
-      // Define a variable to track if this is an auth error
-      let isAuthRelatedError = false;
-      
-      try {
-        // Set timeout to abort if request takes too long
-        timeoutId = setTimeout(() => {
-          if (isMountedRef.current) {
-            console.log('Request timeout reached, aborting');
-            abortController.abort();
-          }
-        }, 15000);
-
-        const response = await fetchWithAuth('/api/uploads', {
-          headers: {
-            'Cache-Control': 'no-cache',
-            'Pragma': 'no-cache'
-          },
-          signal: abortController.signal
-        });
+      if (!response.ok) {
+        let errorMessage = 'Failed to fetch files';
         
-        // Check for non-OK responses
-        if (!response.ok) {
-          // Extract error details from response
-          let errorData = { message: 'Unknown error', code: '' };
-          try {
-            errorData = await response.json();
-          } catch (e) {
-            console.warn('Failed to parse error response:', e);
-            // Fallback error message if JSON parsing fails
-            errorData = { 
-              message: response.statusText || 'Server error occurred', 
-              code: 'PARSE_ERROR' 
-            };
+        // Check for auth-related errors
+        const isAuthRelatedError = response.status === 401 || 
+                                  response.status === 403 || 
+                                  (response.headers.get('WWW-Authenticate') !== null);
+        
+        try {
+          const errorData = await response.json();
+          if (errorData && errorData.message) {
+            errorMessage = errorData.message;
           }
-          
-          // Ensure we have proper error information
-          const errorMessage = errorData.message || 'Failed to load files';
-          const errorCode = errorData.code || '';
-          const errorDetails = {
-            status: response.status,
-            statusText: response.statusText,
-            message: errorMessage,
-            code: errorCode,
-            url: '/api/uploads'
-          };
-          console.error('File list error details:', errorDetails);
-          
-          // Handle authentication errors
-          if (response.status === 401 || response.status === 403 || 
-              errorMessage.toLowerCase().includes('session') ||
-              errorMessage.toLowerCase().includes('auth') ||
-              errorMessage.toLowerCase().includes('token') ||
-              ['SESSION_EXPIRED', 'AUTH_ERROR', 'AUTH_REQUIRED', 'TOKEN_EXPIRED', 'TOKEN_REVOKED']
-                .includes(errorCode)) {
-            
-            console.warn('Authentication error in FileList:', errorCode || response.status);
-            setIsAuthError(true);
-            isAuthRelatedError = true;
-            setError('Authentication error. Session expired.');
-            setShowAuthModal(true);
-            
-            // Clear stored token when auth error detected
-            sessionStorage.removeItem('authToken');
-            
-            // We'll use the AuthContext's user object and sign-in methods instead
-            // of direct Firebase auth access since that's more consistent with
-            // the application's authentication architecture
-            try {
-              // Just mark that we should sign in again
-              console.log('Authentication token needs refresh - will prompt for sign in');
-            } catch (refreshError) {
-              console.error('Error handling auth refresh:', refreshError);
-            }
-            throw new Error('Authentication error. Session expired.');
-          }
-          
-          // Handle rate limiting specially
-          if (response.status === 429) {
-            const retryAfter = parseInt(response.headers.get('Retry-After') || '1', 10);
-            throw new Error(`Rate limited. Retrying in ${retryAfter} seconds.`);
-          }
-          
-          // Handle other API errors
-          throw new Error(`Error loading files: ${errorMessage}`);
+        } catch (jsonError) {
+          // If we can't parse the JSON, just use the status text
+          errorMessage = response.statusText || errorMessage;
         }
         
-        // Process successful response
-        const responseData = await response.json();
-        const fileUploads = responseData.uploads || [];
+        throw new Error(errorMessage);
+      }
+      
+      const data = await response.json();
+      
+      if (isMountedRef.current) {
+        // Process the files data - handle different response structures
+        // Check if data.files exists, otherwise look for data.uploads or use data directly
+        const fileArray = data.files || data.uploads || (Array.isArray(data) ? data : []);
         
-        // Sort files by uploadedAt date (newest first)
-        const processedFiles = fileUploads.map((file: any) => ({
+        if (!fileArray || !Array.isArray(fileArray)) {
+          console.warn('Unexpected API response format:', data);
+          setFiles([]);
+          setError('Unexpected response format from server');
+          return;
+        }
+        
+        const processedFiles = fileArray.map((file: any) => ({
           ...file,
           uploadedAt: new Date(file.uploadedAt || Date.now())
-        })).sort((a: FileItem, b: FileItem) => 
+        }));
+        
+        // Sort files by upload date, newest first
+        processedFiles.sort((a: FileItem, b: FileItem) => 
           b.uploadedAt.getTime() - a.uploadedAt.getTime()
         );
         
@@ -241,134 +199,146 @@ export default function FileList({ onSelectFile, activeFileId, refreshTrigger = 
           setFiles(processedFiles);
           setError(null);
         }
-      } catch (err) {
-        // Improved error handling with more detailed logging
-        let errorMessage = 'Unknown error occurred';
-        let errorDetails: Record<string, any> = {};
+      }
+    } catch (error) {
+      if (isMountedRef.current) {
+        console.error('Error fetching files:', error);
         
-        // Force debug log of the raw error object
-        console.log('Raw error object in FileList:', err);
+        let errorMessage = 'Failed to load files';
+        if (error instanceof Error) {
+          errorMessage = error.message;
+        }
         
-        if (err instanceof Error) {
-          errorMessage = err.message;
-          errorDetails = {
-            name: err.name,
-            message: err.message,
-            stack: err.stack ? err.stack.split('\n').slice(0, 3).join('\n') : 'No stack trace'
-          };
-          
-          // Extract any additional properties from the error
-          Object.getOwnPropertyNames(err).forEach(key => {
-            if (key !== 'name' && key !== 'message' && key !== 'stack') {
-              try {
-                // @ts-ignore: Dynamic property access
-                errorDetails[key] = JSON.stringify(err[key]);
-              } catch (e) {
-                // @ts-ignore: Dynamic property access
-                errorDetails[key] = '[Non-serializable value]';
-              }
-            }
-          });
-        } else if (err !== null && typeof err === 'object') {
-          try {
-            errorMessage = JSON.stringify(err);
-            // Convert each property to ensure serializability
-            Object.entries(err).forEach(([key, value]) => {
-              try {
-                errorDetails[key] = typeof value === 'object' ? JSON.stringify(value) : value;
-              } catch (e) {
-                errorDetails[key] = '[Non-serializable value]';
-              }
-            });
-          } catch (e) {
-            errorMessage = 'Complex error object that cannot be stringified';
-            errorDetails.stringifyError = String(e);
-          }
-        } else if (err === null) {
-          errorMessage = 'Null error received';
-          errorDetails.isNull = true;
-        } else if (err === undefined) {
-          errorMessage = 'Undefined error received';
-          errorDetails.isUndefined = true;
+        // Check if this is an auth-related error
+        const isAuthRelatedError = errorMessage.toLowerCase().includes('auth') || 
+                                  errorMessage.toLowerCase().includes('token') || 
+                                  errorMessage.toLowerCase().includes('sign in') ||
+                                  errorMessage.toLowerCase().includes('unauthorized') ||
+                                  errorMessage.toLowerCase().includes('forbidden');
+        
+        if (isAuthRelatedError) {
+          setIsAuthError(true);
+          setError('Authentication required. Please sign in again.');
+          setShowAuthModal(true);
         } else {
-          errorMessage = String(err);
-          errorDetails.primitiveValue = String(err);
-          errorDetails.valueType = typeof err;
-        }
-        
-        // Ensure error details is never empty
-        if (Object.keys(errorDetails).length === 0) {
-          errorDetails.fallback = 'No extractable details';
-          errorDetails.timestamp = new Date().toISOString();
-        }
-        
-        console.error('Error fetching files:', errorMessage, errorDetails);
-        
-        // Only show errors for non-retry attempts to avoid spamming
-        if (!isRetry && isMountedRef.current) {
-          // Check for authentication-related errors in the error message
-          const authKeywords = ['authentication', 'unauthorized', 'forbidden', 'session expired', 
-                               'token expired', 'login required', 'token revoked'];
+          setError(errorMessage);
           
-          // Check if this is an auth-related error based on keywords
-          const hasAuthKeyword = authKeywords.some(keyword => 
-            errorMessage.toLowerCase().includes(keyword.toLowerCase())
-          );
-          
-          if (hasAuthKeyword) {
-            console.log('Authentication error detected in message:', errorMessage);
-            setIsAuthError(true);
-            isAuthRelatedError = true;
-            setError('Your session has expired. Please sign in again.');
-            setShowAuthModal(true);
-          } else {
-            // For non-auth errors, show regular error and toast
-            setError(errorMessage);
-            
-            // Don't show toast for rate limiting, just retry
-            if (!errorMessage.includes('Rate limited')) {
-              toast({
-                title: 'Error Loading Files',
-                description: errorMessage.length > 100 ? 
-                  `${errorMessage.substring(0, 100)}...` : errorMessage,
-                variant: 'destructive'
-              });
-            }
+          // Only show toast for non-retry attempts
+          if (!isRetry) {
+            toast({
+              title: 'Error loading files',
+              description: errorMessage.length > 100 ? 
+                `${errorMessage.substring(0, 100)}...` : errorMessage,
+              variant: 'destructive'
+            });
           }
         }
         
         // Implement exponential backoff for retries, but don't retry auth errors
         if (currentRetryCount < 5 && isMountedRef.current && !isAuthRelatedError) {
           const nextRetryCount = currentRetryCount + 1;
-          const retryDelay = Math.min(1000 * Math.pow(1.5, nextRetryCount), 10000);
+          const backoffTime = Math.min(1000 * Math.pow(2, nextRetryCount), 30000);
           
           setRetryCount(nextRetryCount);
           
-          console.log(`Retrying fetch (${nextRetryCount}/5) in ${retryDelay}ms`);
-          
+          console.log(`Retry ${nextRetryCount} scheduled in ${backoffTime}ms`);
           fetchTimeoutRef.current = setTimeout(() => {
             if (isMountedRef.current) {
               fetchFiles(true, nextRetryCount);
             }
-          }, retryDelay);
+          }, backoffTime);
         }
-      } finally {
-        cleanupRequest();
       }
     } finally {
+      cleanupRequest();
       if (isMountedRef.current && !isRetry) {
         setLoading(false);
       }
     }
-  }, [user, retryCount, toast]);
+  }, [user, retryCount, toast, cleanupRequest]);
 
   // Trigger fetch when dependencies change
   useEffect(() => {
     fetchFiles(false, 0);
   }, [fetchFiles, refreshTrigger]);
+  
+  // Notify parent component about file status whenever files change
+  useEffect(() => {
+    if (!loading && onFilesLoaded) {
+      onFilesLoaded(files.length > 0);
+    }
+  }, [files, loading, onFilesLoaded]);
+
+  // Auto-select first file when files are loaded and no file is selected
+  useEffect(() => {
+    // If we have files but no activeFileId, select the first file
+    if (files.length > 0 && !activeFileId) {
+      onSelectFile(files[0].fileId);
+    }
+  }, [files, activeFileId, onSelectFile]);
 
   const handleSelectFile = (fileId: string) => {
     onSelectFile(fileId);
+  };
+
+  const handleSelectForMCP = (fileId: string, event: React.MouseEvent) => {
+    event.stopPropagation();
+    if (onSelectForMCP) {
+      onSelectForMCP(fileId);
+    }
+  };
+
+  const handleDeleteClick = (fileId: string, event: React.MouseEvent) => {
+    event.stopPropagation();
+    setDeletingFileId(fileId);
+  };
+
+  const confirmDeleteFile = async () => {
+    if (!deletingFileId) return;
+    
+    setIsDeleting(true);
+    try {
+      const response = await fetchWithAuth(`/api/file/${deletingFileId}`, {
+        method: 'DELETE',
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.message || 'Failed to delete file');
+      }
+      
+      // Remove the file from the local state
+      setFiles(files.filter(file => file.fileId !== deletingFileId));
+      
+      // Show success message
+      toast({
+        title: 'File deleted',
+        description: 'The file has been successfully deleted',
+        variant: 'default'
+      });
+      
+      // If the deleted file was the active file, select another file if available
+      if (deletingFileId === activeFileId && files.length > 1) {
+        const nextFile = files.find(file => file.fileId !== deletingFileId);
+        if (nextFile) {
+          onSelectFile(nextFile.fileId);
+        }
+      }
+    } catch (error) {
+      console.error('Error deleting file:', error);
+      toast({
+        title: 'Error',
+        description: error instanceof Error ? error.message : 'Failed to delete file',
+        variant: 'destructive'
+      });
+    } finally {
+      setIsDeleting(false);
+      setDeletingFileId(null);
+    }
+  };
+
+  const cancelDeleteFile = () => {
+    setDeletingFileId(null);
   };
 
   const handleCloseAuthModal = () => {
@@ -448,9 +418,29 @@ export default function FileList({ onSelectFile, activeFileId, refreshTrigger = 
                   }`}>
                     {file.fileName}
                   </p>
-                  <p className="text-xs text-gray-500">
-                    {new Date(file.uploadedAt).toLocaleDateString()}
-                  </p>
+                  <div className="flex items-center space-x-2">
+                    <p className="text-xs text-gray-500">
+                      {new Date(file.uploadedAt).toLocaleDateString()}
+                    </p>
+                    
+                    {selectionMode === 'mcp' && onSelectForMCP && (
+                      <button
+                        onClick={(e) => handleSelectForMCP(file.fileId, e)}
+                        className="p-1 rounded-full hover:bg-blue-100 dark:hover:bg-blue-900 transition-colors"
+                        title="Select for MCP discussion"
+                      >
+                        <FiMessageSquare className="h-4 w-4 text-blue-600" />
+                      </button>
+                    )}
+                    
+                    <button
+                      onClick={(e) => handleDeleteClick(file.fileId, e)}
+                      className="p-1 rounded-full hover:bg-red-100 dark:hover:bg-red-900 transition-colors"
+                      title="Delete file"
+                    >
+                      <FiTrash2 className="h-4 w-4 text-red-600" />
+                    </button>
+                  </div>
                 </div>
                 <div className="mt-1">
                   <p className="text-xs text-gray-500">
@@ -463,6 +453,41 @@ export default function FileList({ onSelectFile, activeFileId, refreshTrigger = 
         ))}
         </ul>
       </div>
+      
+      {/* Delete confirmation dialog */}
+      {deletingFileId && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white dark:bg-gray-800 rounded-lg p-6 max-w-md w-full">
+            <h3 className="text-lg font-medium mb-4 text-gray-900 dark:text-gray-100">Confirm Deletion</h3>
+            <p className="text-gray-600 dark:text-gray-300 mb-6">
+              Are you sure you want to delete this file? This action cannot be undone.
+            </p>
+            <div className="flex justify-end space-x-3">
+              <button
+                onClick={cancelDeleteFile}
+                className="px-4 py-2 border border-gray-300 rounded-md text-gray-700 dark:text-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+                disabled={isDeleting}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmDeleteFile}
+                className="px-4 py-2 bg-red-600 text-white rounded-md hover:bg-red-700 transition-colors flex items-center"
+                disabled={isDeleting}
+              >
+                {isDeleting ? (
+                  <>
+                    <FiLoader className="animate-spin h-4 w-4 mr-2" />
+                    Deleting...
+                  </>
+                ) : (
+                  'Delete'
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }

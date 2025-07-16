@@ -1,6 +1,9 @@
+'use client';
+
 import { useEffect } from 'react';
 import TestPanel from '@/components/panels/TestPanel';
 import { useCanvasStore } from '@/store/useCanvasStore';
+import { AuthProvider } from '@/context/AuthContext';
 
 export default function TestPage() {
   const { setNodes, setEdges } = useCanvasStore();
@@ -63,13 +66,15 @@ export default function TestPage() {
   }, [setNodes, setEdges]);
   
   return (
-    <div className="container mx-auto p-6">
-      <h1 className="text-2xl font-bold mb-6">Pipeline Testing</h1>
-      <div className="grid grid-cols-1 gap-6">
-        <div className="h-[600px]">
-          <TestPanel />
+    <AuthProvider>
+      <div className="container mx-auto p-6">
+        <h1 className="text-2xl font-bold mb-6">Pipeline Testing</h1>
+        <div className="grid grid-cols-1 gap-6">
+          <div className="h-[600px]">
+            <TestPanel />
+          </div>
         </div>
       </div>
-    </div>
+    </AuthProvider>
   );
 }

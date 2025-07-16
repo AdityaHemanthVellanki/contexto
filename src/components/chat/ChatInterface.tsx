@@ -2,7 +2,8 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { FiSend, FiDownload, FiSliders, FiLoader, FiBarChart2 } from 'react-icons/fi';
+import { FiSend, FiDownload, FiLoader, FiBarChart2, FiFile } from 'react-icons/fi';
+import FileSelectionModal from '@/components/mcp/FileSelectionModal';
 import { useAuth } from '@/context/AuthContext';
 import { cn } from '@/utils/cn';
 import { useToast } from '@/components/ui/toast';
@@ -39,6 +40,8 @@ export default function ChatInterface({
   const [isLoading, setIsLoading] = useState(false);
   const [exportStatus, setExportStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [showUsage, setShowUsage] = useState<string | null>(null);
+  const [isFileSelectionModalOpen, setIsFileSelectionModalOpen] = useState(false);
+  const [mcpFileId, setMcpFileId] = useState<string | undefined>(undefined);
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -124,23 +127,47 @@ export default function ChatInterface({
         title: 'Query Failed',
         description: error instanceof Error ? error.message : 'Failed to process your request',
         variant: 'destructive',
-        duration: 5000
       });
     } finally {
       setIsLoading(false);
     }
   };
   
+  // Open file selection modal for MCP discussions
+  const handleOpenFileSelectionModal = () => {
+    setIsFileSelectionModalOpen(true);
+  };
+  
+  // Handle file selection for MCP discussions
+  const handleSelectFileForMCP = (fileId: string) => {
+    setMcpFileId(fileId);
+    setIsFileSelectionModalOpen(false);
+    
+    toast({
+      title: 'File Selected for MCP',
+      description: 'You can now export this file for MCP pipeline processing',
+      variant: 'default',
+    });
+  };
+  
   // Handle export of MCP server
   const handleExport = async () => {
-    if (exportStatus === 'loading' || !activeFileId) return;
+    if (!importedData || (!mcpFileId && !activeFileId)) return;
     
     setExportStatus('loading');
+    
     try {
       // Get the auth token
       const idToken = await user?.getIdToken();
       if (!idToken) throw new Error('Authentication required');
       
+      // Prioritize the MCP selected file if available, fall back to active file
+      const fileIdToExport = mcpFileId || activeFileId;
+      
+      // Filter out system messages for export
+      const filteredMessages = messages.filter(m => m.role === 'user' || m.role === 'assistant');
+      
+      // Call export API
       const response = await fetch('/api/exportMCP', {
         method: 'POST',
         headers: {
@@ -148,52 +175,44 @@ export default function ChatInterface({
           'Authorization': `Bearer ${idToken}`
         },
         body: JSON.stringify({
-          fileId: activeFileId
+          fileId: fileIdToExport,
+          messages: filteredMessages.map(m => ({
+            role: m.role,
+            content: m.content
+          }))
         }),
       });
       
       if (!response.ok) {
         const errorData = await response.json();
-        throw new Error(errorData.message || 'Failed to export MCP server');
+        throw new Error(errorData.message || 'Failed to export');
       }
       
-      const blob = await response.blob();
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `contexto-mcp-${activeFileId}.zip`;
-      document.body.appendChild(a);
-      a.click();
-      window.URL.revokeObjectURL(url);
-      document.body.removeChild(a);
-      
+      // Handle successful export
       setExportStatus('success');
       
-      // Show success toast
       toast({
-        title: 'MCP Server Ready',
-        description: 'Your MCP server has been exported successfully',
-        variant: 'success',
-        duration: 3000
+        title: 'Export Successful',
+        description: 'Your MCP pipeline has been exported successfully',
+        variant: 'default',
       });
       
-      // Reset status after showing success briefly
+      // Reset status after a delay
       setTimeout(() => {
         setExportStatus('idle');
-      }, 2000);
+      }, 3000);
+      
     } catch (error) {
-      console.error('Error exporting MCP server:', error);
+      console.error('Export error:', error);
       setExportStatus('error');
       
-      // Show error toast
       toast({
         title: 'Export Failed',
-        description: error instanceof Error ? error.message : 'Failed to export MCP server',
+        description: error instanceof Error ? error.message : 'Failed to export MCP pipeline',
         variant: 'destructive',
-        duration: 5000
       });
       
-      // Reset status after showing error briefly
+      // Reset status after a delay
       setTimeout(() => {
         setExportStatus('idle');
       }, 3000);
@@ -203,7 +222,7 @@ export default function ChatInterface({
   // Auto-resize textarea height as content grows
   const handleTextareaChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setInput(e.target.value);
-    e.target.style.height = 'inherit';
+    e.target.style.height = 'auto';
     e.target.style.height = `${e.target.scrollHeight}px`;
   };
   
@@ -216,135 +235,131 @@ export default function ChatInterface({
   };
 
   return (
-    <div className="flex flex-col w-full max-w-2xl mx-auto my-12 p-6">
-      {/* Advanced View Toggle */}
-      <div className="flex justify-end mb-4">
-        <button
-          onClick={onShowAdvancedView}
-          className="inline-flex items-center text-sm text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 dark:focus:ring-offset-gray-900 rounded-md"
-          aria-label="Switch to advanced view"
-        >
-          <FiSliders className="mr-1.5 h-4 w-4" />
-          Switch to Advanced View
-        </button>
-      </div>
-      
-      {/* Import Data Section */}
-      {!importedData && (
-        <div className="mb-6">
-          <motion.button
-            onClick={onImportData}
-            className="w-full py-12 border-2 border-dashed border-gray-300 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 rounded-lg text-center transition-all focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 dark:focus:ring-offset-gray-900"
-            whileHover={{ scale: 1.02 }}
-            whileTap={{ scale: 0.98 }}
-          >
-            <div className="flex flex-col items-center justify-center">
-              <svg 
-                className="h-12 w-12 text-gray-400 dark:text-gray-500 mb-3" 
-                fill="none" 
-                stroke="currentColor" 
-                viewBox="0 0 24 24"
-              >
-                <path 
-                  strokeLinecap="round" 
-                  strokeLinejoin="round" 
-                  strokeWidth={1.5} 
-                  d="M9 13h6m-3-3v6m5 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" 
-                />
-              </svg>
-              <p className="text-lg font-medium text-gray-700 dark:text-gray-300">
-                Import Data
-              </p>
-              <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-                Drop files or click to upload
-              </p>
-            </div>
-          </motion.button>
-        </div>
-      )}
-      
-      {/* Chat Messages */}
-      <div 
-        className={cn(
-          "flex-1 overflow-y-auto mb-4 space-y-4 rounded-lg",
-          messages.length > 0 ? "border border-gray-200 dark:border-gray-700 p-4" : ""
-        )}
-        style={{ maxHeight: '60vh', minHeight: messages.length > 0 ? '300px' : '0px' }}
-      >
-        <AnimatePresence>
-          {messages.map(message => (
-            <motion.div
-              key={message.id}
+    <div className="flex flex-col h-full max-h-full overflow-hidden">
+      {/* Message History */}
+      <div className="flex-grow overflow-y-auto px-2 md:px-4 py-4 space-y-4">
+        <AnimatePresence initial={false}>
+          {messages.length === 0 ? (
+            <motion.div 
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -10 }}
               transition={{ duration: 0.3 }}
-              className={cn(
-                "p-3 rounded-lg max-w-[85%]",
-                message.role === 'user' 
-                  ? "bg-blue-100 dark:bg-blue-900/30 ml-auto text-gray-800 dark:text-gray-200" 
-                  : "bg-gray-100 dark:bg-gray-800 mr-auto text-gray-800 dark:text-gray-200"
-              )}
+              className="text-center py-10 text-gray-500 dark:text-gray-400"
             >
-              <div className="text-sm font-medium mb-1">
-                {message.role === 'user' ? 'You' : 'Contexto AI'}
+              <div className="mb-2">
+                <FiBarChart2 className="mx-auto h-10 w-10 mb-2" />
+                <h3 className="text-lg font-medium">Your Contexto Chat</h3>
               </div>
-              <div className="whitespace-pre-wrap text-sm">
-                {message.content}
-              </div>
-              <div className="flex justify-between items-center mt-1">
-                <div>
-                  {message.usageReport && message.role === 'assistant' && (
-                    <button 
-                      onClick={() => setShowUsage(showUsage === message.id ? null : message.id)}
-                      className="flex items-center text-xs text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300"
-                    >
-                      <FiBarChart2 className="mr-1" />
-                      Usage Stats
-                    </button>
-                  )}
-                </div>
-                <div className="text-xs text-gray-500 dark:text-gray-400 text-right">
-                  {message.timestamp.toLocaleTimeString()}
-                </div>
-              </div>
-              
-              {/* Usage Report */}
-              {showUsage === message.id && message.usageReport && (
-                <motion.div 
-                  initial={{ opacity: 0, height: 0 }}
-                  animate={{ opacity: 1, height: 'auto' }}
-                  exit={{ opacity: 0, height: 0 }}
-                  className="mt-2 pt-2 border-t border-gray-200 dark:border-gray-700 text-xs text-gray-500 dark:text-gray-400"
-                >
-                  <div className="grid grid-cols-2 gap-1">
-                    <span>Prompt Tokens:</span>
-                    <span className="text-right">{message.usageReport.promptTokens}</span>
-                    <span>Completion Tokens:</span>
-                    <span className="text-right">{message.usageReport.completionTokens}</span>
-                    <span>Total Tokens:</span>
-                    <span className="text-right">{message.usageReport.totalTokens}</span>
-                    <span>Latency:</span>
-                    <span className="text-right">{message.usageReport.latencyMs}ms</span>
-                  </div>
-                </motion.div>
-              )}
+              <p>Ask questions about your imported data.</p>
+              <p className="text-sm mt-4">
+                {!importedData ? (
+                  <button 
+                    onClick={onImportData}
+                    className="text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300 underline"
+                  >
+                    Import data
+                  </button>
+                ) : (
+                  "Start by typing a question below."
+                )}
+              </p>
             </motion.div>
-          ))}
+          ) : (
+            messages.map(message => (
+              <motion.div
+                key={message.id}
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.3 }}
+                className={cn(
+                  "p-4 rounded-lg max-w-[85%] break-words",
+                  message.role === "user" 
+                    ? "bg-blue-100 dark:bg-blue-900 dark:text-white ml-auto" 
+                    : "bg-gray-100 dark:bg-gray-800 dark:text-white"
+                )}
+              >
+                <div className="flex justify-between items-start mb-2">
+                  <span className="text-xs text-gray-500 dark:text-gray-400">
+                    {message.role === "user" ? "You" : "Contexto"}
+                  </span>
+                  <span className="text-xs text-gray-400 dark:text-gray-500">
+                    {message.timestamp.toLocaleTimeString()}
+                  </span>
+                </div>
+                
+                {/* Message content with white-space preserved */}
+                <div className="whitespace-pre-wrap">{message.content}</div>
+                
+                {/* Usage report toggle */}
+                {message.role === 'assistant' && message.usageReport && (
+                  <div className="mt-2 text-xs">
+                    <button
+                      onClick={() => setShowUsage(showUsage === message.id ? null : message.id)}
+                      className="text-gray-500 dark:text-gray-400 hover:underline flex items-center"
+                    >
+                      <FiBarChart2 className="mr-1 h-3 w-3" />
+                      {showUsage === message.id ? 'Hide Stats' : 'Show Stats'}
+                    </button>
+                    
+                    {showUsage === message.id && (
+                      <motion.div
+                        initial={{ opacity: 0, height: 0 }}
+                        animate={{ opacity: 1, height: 'auto' }}
+                        exit={{ opacity: 0, height: 0 }}
+                        className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 bg-gray-200 dark:bg-gray-700 p-2 rounded text-gray-600 dark:text-gray-300"
+                      >
+                        <div>Prompt tokens:</div>
+                        <div className="text-right">{message.usageReport.promptTokens}</div>
+                        <div>Completion tokens:</div>
+                        <div className="text-right">{message.usageReport.completionTokens}</div>
+                        <div>Total tokens:</div>
+                        <div className="text-right">{message.usageReport.totalTokens}</div>
+                        <div>Latency:</div>
+                        <div className="text-right">{message.usageReport.latencyMs}ms</div>
+                      </motion.div>
+                    )}
+                  </div>
+                )}
+              </motion.div>
+            ))
+          )}
         </AnimatePresence>
         
         {isLoading && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
-            className="flex items-center space-x-2 p-3 rounded-lg bg-gray-100 dark:bg-gray-800 mr-auto text-gray-500 dark:text-gray-400"
+            className="flex items-center space-x-2 p-4 rounded-lg bg-gray-100 dark:bg-gray-800 max-w-[85%]"
           >
-            <FiLoader className="h-4 w-4 animate-spin" />
-            <span>Contexto AI is thinking...</span>
+            <div className="flex space-x-1">
+              <motion.div
+                animate={{
+                  scale: [1, 1.2, 1],
+                  opacity: [0.4, 1, 0.4]
+                }}
+                transition={{ duration: 1.5, repeat: Infinity, delay: 0 }}
+                className="h-2 w-2 rounded-full bg-blue-500"
+              />
+              <motion.div
+                animate={{
+                  scale: [1, 1.2, 1],
+                  opacity: [0.4, 1, 0.4]
+                }}
+                transition={{ duration: 1.5, repeat: Infinity, delay: 0.2 }}
+                className="h-2 w-2 rounded-full bg-blue-500"
+              />
+              <motion.div
+                animate={{
+                  scale: [1, 1.2, 1],
+                  opacity: [0.4, 1, 0.4]
+                }}
+                transition={{ duration: 1.5, repeat: Infinity, delay: 0.4 }}
+                className="h-2 w-2 rounded-full bg-blue-500"
+              />
+            </div>
+            <span className="text-sm text-gray-500 dark:text-gray-400">Contexto is thinking...</span>
           </motion.div>
         )}
-        
-        {/* Auto-scroll anchor */}
         <div ref={messagesEndRef} />
       </div>
       
@@ -379,8 +394,27 @@ export default function ChatInterface({
         </button>
       </form>
       
-      {/* Export Button */}
-      <div className="mt-4 flex justify-center">
+      {/* Action Buttons */}
+      <div className="mt-4 flex justify-center space-x-3">
+        {/* MCP File Selection Button */}
+        <motion.button
+          onClick={handleOpenFileSelectionModal}
+          disabled={!importedData}
+          className={cn(
+            "flex items-center justify-center px-4 py-2 text-sm rounded-md transition-all focus:outline-none focus:ring-2 focus:ring-offset-2",
+            importedData
+              ? "bg-gray-200 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-700"
+              : "bg-gray-200 dark:bg-gray-800 text-gray-500 dark:text-gray-600 opacity-50 cursor-not-allowed"
+          )}
+          whileHover={importedData ? { scale: 1.03 } : {}}
+          whileTap={importedData ? { scale: 0.97 } : {}}
+          aria-label="Select File for MCP Discussion"
+        >
+          <FiFile className="mr-2 h-4 w-4" />
+          {mcpFileId ? 'Change MCP File' : 'Select File for MCP'}
+        </motion.button>
+
+        {/* Export Button */}
         <motion.button
           onClick={handleExport}
           disabled={exportStatus === 'loading' || !importedData || !activeFileId}
@@ -394,7 +428,6 @@ export default function ChatInterface({
           whileTap={importedData && activeFileId ? { scale: 0.97 } : {}}
           aria-label="Export MCP Pipeline"
         >
-          <FiDownload className="mr-2 h-4 w-4" />
           {exportStatus === 'loading' ? (
             <>
               <FiLoader className="animate-spin h-4 w-4 mr-2" />
@@ -405,10 +438,22 @@ export default function ChatInterface({
           ) : exportStatus === 'error' ? (
             'Export Failed'
           ) : (
-            'Export MCP Pipeline'
+            <>
+              <FiDownload className="mr-2 h-4 w-4" />
+              Export MCP Pipeline
+            </>
           )}
         </motion.button>
       </div>
+      
+      {/* File Selection Modal */}
+      {isFileSelectionModalOpen && (
+        <FileSelectionModal 
+          isOpen={isFileSelectionModalOpen}
+          onClose={() => setIsFileSelectionModalOpen(false)}
+          onSelectForMCP={handleSelectFileForMCP}
+        />
+      )}
     </div>
   );
 }

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getFirestore } from '@/lib/firebase-admin';
 import * as admin from 'firebase-admin';
 import { authenticateRequest } from '@/lib/api-auth';
-import { rateLimit } from '@/lib/rate-limiter';
+import { rateLimit } from '@/lib/rate-limiter-memory';
 import { r2, R2_BUCKET } from '@/lib/r2';
 import { PutObjectCommand } from '@aws-sdk/client-s3';
 
@@ -41,17 +41,34 @@ async function handleBinaryUpload(request: NextRequest, userId: string): Promise
     // Create the R2 object key with user isolation
     const key = `${userId}/uploads/${timestamp}_${filename}`;
     
-    // Upload to R2
-    await r2.send(
-      new PutObjectCommand({
-        Bucket: R2_BUCKET,
-        Key: key,
-        Body: buffer,
-        ContentType: mimetype
-      })
-    );
-    
-    console.log(`Binary file successfully uploaded to R2: ${key}`);
+    // Upload to R2 with enhanced error handling
+    try {
+      // Log upload attempt (for debugging)
+      console.log(`Attempting R2 upload with key: ${key}`);
+      console.log(`Content type: ${mimetype}, Size: ${buffer.byteLength} bytes`);
+      
+      // Validate R2 bucket name is not empty
+      if (!R2_BUCKET) {
+        throw new Error('R2_BUCKET environment variable is not properly configured');
+      }
+      
+      await r2.send(
+        new PutObjectCommand({
+          Bucket: R2_BUCKET,
+          Key: key,
+          Body: buffer,
+          ContentType: mimetype || 'application/octet-stream' // Provide fallback content type
+        })
+      );
+      
+      console.log(`Binary file successfully uploaded to R2: ${key}`);
+    } catch (uploadError) {
+      console.error('R2 upload error details:', uploadError);
+      return NextResponse.json({ 
+        message: `R2 upload failed: ${uploadError instanceof Error ? uploadError.message : 'Unknown error'}`, 
+        errorType: 'R2UploadError'
+      }, { status: 500 });
+    }
     
     // Generate R2 file URL
     const fileUrl = process.env.CF_R2_ENDPOINT 
@@ -99,8 +116,11 @@ export async function POST(request: NextRequest) {
     });
     
     // Return rate limit response if limit exceeded
-    if (rateLimitResult.limited && rateLimitResult.response) {
-      return rateLimitResult.response;
+    if (rateLimitResult.limited) {
+      return rateLimitResult.response || NextResponse.json(
+        { message: 'Rate limit exceeded', error: 'rate_limited' },
+        { status: 429 }
+      );
     }
     
     // Authenticate request
@@ -157,23 +177,59 @@ export async function POST(request: NextRequest) {
     // Create a unique key for R2 storage with user isolation
     const key = `${userId}/uploads/${timestamp}_${file.name}`;
     
-    // Upload file to R2
+    // Upload file to R2 with extensive error handling and debugging
     try {
-      await r2.send(
-        new PutObjectCommand({
+      // Log detailed information about the upload attempt
+      console.log('Form upload attempt:', { 
+        fileName: file.name,
+        fileType: file.type, 
+        fileSize: file.size, 
+        bucketName: R2_BUCKET,
+        key
+      });
+      
+      // Validate R2 configuration
+      if (!R2_BUCKET) {
+        throw new Error('R2_BUCKET is not configured');
+      }
+      
+      // Check endpoint configuration
+      const endpoint = process.env.CF_R2_ENDPOINT;
+      console.log(`Using R2 endpoint: ${endpoint || 'Default endpoint'}`); 
+      
+      // Execute the upload with better error handling
+      try {
+        const uploadCommand = new PutObjectCommand({
           Bucket: R2_BUCKET,
           Key: key,
           Body: buffer,
-          ContentType: file.type
-        })
-      );
+          ContentType: file.type || 'application/octet-stream' // Fallback content type
+        });
+        
+        await r2.send(uploadCommand);
+        console.log(`File successfully uploaded to R2: ${key}`);
+      } catch (uploadError) {
+        console.error('R2 client error details:', uploadError);
+        if (uploadError instanceof Error && uploadError.name === 'CredentialsProviderError') {
+          return NextResponse.json({ 
+            message: 'R2 authentication failed - Check R2 credentials', 
+            errorType: 'R2CredentialsError' 
+          }, { status: 401 });
+        }
+        throw uploadError; // Re-throw to be caught by outer catch
+      }
       
-      console.log(`File successfully uploaded to R2: ${key}`);
+      // Generate R2 file URL with more robust handling
+      let fileUrl;
+      if (process.env.CF_R2_ENDPOINT) {
+        const baseEndpoint = process.env.CF_R2_ENDPOINT.endsWith('/') ? 
+          process.env.CF_R2_ENDPOINT.slice(0, -1) : process.env.CF_R2_ENDPOINT;
+        fileUrl = `${baseEndpoint}/${R2_BUCKET}/${encodeURIComponent(key)}`;
+      } else {
+        fileUrl = `https://${R2_BUCKET}.r2.cloudflarestorage.com/${encodeURIComponent(key)}`;
+      }
       
-      // Generate R2 file URL
-      const fileUrl = process.env.CF_R2_ENDPOINT 
-        ? `${process.env.CF_R2_ENDPOINT}/${R2_BUCKET}/${encodeURIComponent(key)}`
-        : `https://${R2_BUCKET}.r2.cloudflarestorage.com/${encodeURIComponent(key)}`;
+      console.log(`Generated file URL: ${fileUrl}`);
       
       // Store only metadata in Firestore (not the file content)
       const uploadRef = db.collection('uploads').doc(uploadId);
@@ -181,17 +237,22 @@ export async function POST(request: NextRequest) {
         userId,
         fileId: uploadId,
         fileName: file.name,
-        fileType: file.type,
+        fileType: file.type || 'application/octet-stream',
         fileSize: file.size,
-        fileUrl, // Store the R2 URL instead of the content
-        r2Key: key, // Store the R2 key for future reference
+        fileUrl, 
+        r2Key: key,
         uploadedAt: FieldValue.serverTimestamp(),
         status: 'uploaded',
       });
     } catch (error: unknown) {
-      console.error('R2 upload error:', error);
+      console.error('Complete R2 upload error:', error);
       const errorMessage = error instanceof Error ? error.message : 'Unknown R2 error';
-      throw new Error(`Failed to upload file to R2: ${errorMessage}`);
+      
+      // Return a JSON error response instead of throwing
+      return NextResponse.json({
+        message: `Failed to upload file: ${errorMessage}`,
+        errorType: 'UploadError'
+      }, { status: 500 });
     }
 
     // Create response with the file details

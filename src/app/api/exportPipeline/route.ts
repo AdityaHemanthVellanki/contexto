@@ -1,15 +1,22 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { auth, db } from '@/lib/firebase';
-import { doc, getDoc } from 'firebase/firestore';
+import { getFirestore } from '@/lib/firebase-admin';
+import { authenticateRequest } from '@/lib/api-auth';
+
+// Initialize Firestore
+const db = getFirestore();
 
 export async function POST(request: NextRequest) {
   try {
-    // Get the current authenticated user
-    const session = await auth.currentUser;
-    if (!session) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    // Authenticate the request using our helper
+    const authResult = await authenticateRequest(request);
+    
+    if (!authResult.authenticated) {
+      // authenticateRequest already returns a proper NextResponse for errors
+      return authResult.response;
     }
-
+    
+    const userId = authResult.userId;
+    
     // Parse the request body
     const body = await request.json();
     const { pipelineId } = body;
@@ -22,22 +29,22 @@ export async function POST(request: NextRequest) {
       });
     }
     
-    // Fetch the pipeline from Firestore
+    // Fetch the pipeline from Firestore using Admin SDK
     try {
-      const pipelineRef = doc(db, 'pipelines', pipelineId);
-      const pipelineDoc = await getDoc(pipelineRef);
+      const pipelineRef = db.collection('pipelines').doc(pipelineId);
+      const pipelineDoc = await pipelineRef.get();
       
-      if (!pipelineDoc.exists()) {
+      if (!pipelineDoc.exists) {
         return NextResponse.json({
-          error: 'Pipeline not found'
+          message: 'Pipeline not found'
         }, { status: 404 });
       }
       
       // Verify pipeline ownership
       const pipelineData = pipelineDoc.data();
-      if (pipelineData.userId !== session.uid) {
+      if (!pipelineData || pipelineData.userId !== userId) {
         return NextResponse.json({
-          error: 'You do not have permission to export this pipeline'
+          message: 'Unauthorized: You do not have permission to export this pipeline'
         }, { status: 403 });
       }
       
@@ -50,14 +57,14 @@ export async function POST(request: NextRequest) {
     } catch (dbError) {
       console.error('Database error when fetching pipeline:', dbError);
       return NextResponse.json({
-        error: 'Failed to fetch pipeline data'
+        message: 'Failed to fetch pipeline data',
+        details: dbError instanceof Error ? dbError.message : 'Unknown database error'
       }, { status: 500 });
     }
-    
   } catch (error) {
     console.error('Error exporting pipeline:', error);
     return NextResponse.json({ 
-      error: 'Failed to export pipeline',
+      message: 'Failed to export pipeline',
       details: error instanceof Error ? error.message : 'Unknown error' 
     }, { status: 500 });
   }

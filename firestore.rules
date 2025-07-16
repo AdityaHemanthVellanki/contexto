@@ -14,7 +14,22 @@ service cloud.firestore {
     // Uploads: only the owner can access their own uploads
     match /uploads/{uploadId} {
       allow create: if request.auth != null && request.auth.uid == request.resource.data.userId;
-      allow read, update, delete: if request.auth != null && request.auth.uid == resource.data.userId;
+      allow read, update: if request.auth != null && request.auth.uid == resource.data.userId;
+      // Only allow deletion if the user owns the document and it's not being processed
+      allow delete: if request.auth != null && 
+                    request.auth.uid == resource.data.userId && 
+                    (resource.data.status != "processing");
+      
+      // Queries subcollection: each query belongs to the user who owns the parent upload
+      match /queries/{queryId} {
+        allow create: if request.auth != null && 
+                      get(/databases/$(database)/documents/uploads/$(uploadId)).data.userId == request.auth.uid;
+        allow read: if request.auth != null && 
+                    get(/databases/$(database)/documents/uploads/$(uploadId)).data.userId == request.auth.uid;
+        allow update: if request.auth != null && 
+                      get(/databases/$(database)/documents/uploads/$(uploadId)).data.userId == request.auth.uid;
+        allow delete: if false;
+      }
     }
 
     // Embeddings: only the owner can access their embeddings
