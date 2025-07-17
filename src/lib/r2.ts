@@ -1,4 +1,5 @@
 import { S3Client } from "@aws-sdk/client-s3";
+import { NodeHttpHandler } from "@aws-sdk/node-http-handler";
 
 /**
  * Enhanced R2 client configuration with better error handling
@@ -13,8 +14,18 @@ if (!process.env.CF_R2_ENDPOINT) missingVars.push('CF_R2_ENDPOINT');
 if (!process.env.CF_R2_BUCKET_NAME) missingVars.push('CF_R2_BUCKET_NAME');
 
 if (missingVars.length > 0) {
-  console.error(`⚠️ Missing R2 environment variables: ${missingVars.join(', ')}`);
-  console.error('File upload functionality will not work properly.');
+  console.error(`⚠️ CRITICAL ERROR: Missing R2 environment variables: ${missingVars.join(', ')}`);
+  console.error('File download and upload functionality will not work properly.');
+  
+  // Log to help with debugging
+  console.error('Environment check:', {
+    NODE_ENV: process.env.NODE_ENV || 'not set',
+    VERCEL_ENV: process.env.VERCEL_ENV || 'not set',
+    hasAccessKey: !!process.env.CF_R2_ACCESS_KEY_ID,
+    hasSecretKey: !!process.env.CF_R2_SECRET_ACCESS_KEY,
+    hasEndpoint: !!process.env.CF_R2_ENDPOINT,
+    hasBucket: !!process.env.CF_R2_BUCKET_NAME
+  });
 }
 
 // Ensure endpoint has correct format
@@ -38,8 +49,14 @@ export const r2 = new S3Client({
     accessKeyId: process.env.CF_R2_ACCESS_KEY_ID || 'missing-key-id',
     secretAccessKey: process.env.CF_R2_SECRET_ACCESS_KEY || 'missing-secret-key',
   },
-  // Add proper retries and timeouts
+  // Add proper retries and timeouts with more generous limits
   maxAttempts: 3,
+  requestHandler: new NodeHttpHandler({
+    connectionTimeout: 10000, // 10 seconds
+    socketTimeout: 30000,    // 30 seconds
+  }),
+  // Force path style for better compatibility with Cloudflare R2
+  forcePathStyle: true,
 });
 
 // Export bucket name for use in other modules

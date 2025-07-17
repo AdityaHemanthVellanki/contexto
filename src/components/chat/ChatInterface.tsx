@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { FiSend, FiDownload, FiLoader, FiBarChart2, FiFile } from 'react-icons/fi';
+import { FiSend, FiDownload, FiLoader, FiBarChart2, FiFile, FiChevronDown, FiChevronRight } from 'react-icons/fi';
 import FileSelectionModal from '@/components/mcp/FileSelectionModal';
 import { useAuth } from '@/context/AuthContext';
 import { cn } from '@/utils/cn';
@@ -14,6 +14,7 @@ interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
   timestamp: Date;
+  retrievedContext?: string[];
   usageReport?: {
     promptTokens: number;
     completionTokens: number;
@@ -40,6 +41,7 @@ export default function ChatInterface({
   const [isLoading, setIsLoading] = useState(false);
   const [exportStatus, setExportStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [showUsage, setShowUsage] = useState<string | null>(null);
+  const [expandedContext, setExpandedContext] = useState<string | null>(null);
   const [isFileSelectionModalOpen, setIsFileSelectionModalOpen] = useState(false);
   const [mcpFileId, setMcpFileId] = useState<string | undefined>(undefined);
   
@@ -80,33 +82,47 @@ export default function ChatInterface({
       const idToken = await user?.getIdToken();
       if (!idToken) throw new Error('Authentication required');
 
-      // Call our new query API
-      const response = await fetch('/api/query', {
+      // Determine which endpoint to use - MCP pipeline or standard query
+      const endpoint = '/api/process';
+      const requestBody = {
+        fileId: activeFileId,
+        question: input.trim()
+      };
+      
+      console.log(`Processing question with MCP pipeline for file ${activeFileId}`);
+      
+      // Call our API
+      const response = await fetch(endpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${idToken}`
         },
-        body: JSON.stringify({
-          prompt: input.trim(),
-          fileId: activeFileId
-        }),
+        body: JSON.stringify(requestBody),
       });
       
       if (!response.ok) {
         const errorData = await response.json();
-        throw new Error(errorData.message || 'Failed to get response');
+        throw new Error(errorData.error || 'Failed to get response');
       }
       
       const data = await response.json();
       
-      // Add assistant message with usage report
+      // Add assistant message
       const assistantMessage: ChatMessage = {
         id: Date.now().toString(),
         role: 'assistant',
         content: data.answer || 'Sorry, I couldn\'t process that request.',
         timestamp: new Date(),
-        usageReport: data.usageReport
+        // Add retrieved chunks for context display
+        retrievedContext: data.retrieved || [],
+        // Add usage as part of the message metadata
+        usageReport: {
+          promptTokens: data.promptTokens || 0,
+          completionTokens: data.completionTokens || 0,
+          totalTokens: (data.promptTokens || 0) + (data.completionTokens || 0),
+          latencyMs: 0 // We could add this from the server later
+        }
       };
       
       setMessages(prev => [...prev, assistantMessage]);
@@ -219,6 +235,11 @@ export default function ChatInterface({
     }
   };
   
+  // Helper function to check if file is ready for querying
+  const isFileReady = () => {
+    return importedData && activeFileId && !isLoading;
+  };
+  
   // Auto-resize textarea height as content grows
   const handleTextareaChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setInput(e.target.value);
@@ -289,6 +310,39 @@ export default function ChatInterface({
                 
                 {/* Message content with white-space preserved */}
                 <div className="whitespace-pre-wrap">{message.content}</div>
+                
+                {/* Retrieved context chunks display */}
+                {message.role === 'assistant' && message.retrievedContext && message.retrievedContext.length > 0 && (
+                  <div className="mt-3 pt-3 border-t border-gray-200 dark:border-gray-700">
+                    <button
+                      onClick={() => setExpandedContext(expandedContext === message.id ? null : message.id)}
+                      className="flex items-center text-sm text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 transition-colors"
+                    >
+                      {expandedContext === message.id ? (
+                        <FiChevronDown className="mr-1 h-3 w-3" />
+                      ) : (
+                        <FiChevronRight className="mr-1 h-3 w-3" />
+                      )}
+                      <span>{message.retrievedContext.length} source chunk{message.retrievedContext.length !== 1 ? 's' : ''} used</span>
+                    </button>
+                    
+                    {expandedContext === message.id && (
+                      <motion.div
+                        initial={{ opacity: 0, height: 0 }}
+                        animate={{ opacity: 1, height: 'auto' }}
+                        exit={{ opacity: 0, height: 0 }}
+                        className="mt-2 space-y-2 text-sm max-h-60 overflow-y-auto"
+                      >
+                        {message.retrievedContext.map((chunk, index) => (
+                          <div key={index} className="p-2 rounded bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600">
+                            <div className="font-mono text-xs text-gray-500 dark:text-gray-400 mb-1">Source {index + 1}</div>
+                            <div className="text-gray-800 dark:text-gray-200 text-xs">{chunk}</div>
+                          </div>
+                        ))}
+                      </motion.div>
+                    )}
+                  </div>
+                )}
                 
                 {/* Usage report toggle */}
                 {message.role === 'assistant' && message.usageReport && (

@@ -7,7 +7,15 @@
  */
 
 // Standard server-side environment variables (preferred)
-export const getFirebaseAdminConfig = () => {
+export interface FirebaseAdminConfig {
+  projectId: string;
+  clientEmail: string;
+  privateKey: string;
+  storageBucket?: string;
+  useEmulator?: boolean;
+}
+
+export const getFirebaseAdminConfig = (): FirebaseAdminConfig => {
   // Use explicit server-side config if available
   if (process.env.FIREBASE_PROJECT_ID && 
       process.env.FIREBASE_CLIENT_EMAIL && 
@@ -16,6 +24,7 @@ export const getFirebaseAdminConfig = () => {
       projectId: process.env.FIREBASE_PROJECT_ID,
       clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
       privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+      storageBucket: process.env.FIREBASE_STORAGE_BUCKET,
     };
   }
   
@@ -27,6 +36,7 @@ export const getFirebaseAdminConfig = () => {
         projectId: credentials.project_id || credentials.projectId,
         clientEmail: credentials.client_email || credentials.clientEmail,
         privateKey: credentials.private_key || credentials.privateKey,
+        storageBucket: credentials.storage_bucket || credentials.storageBucket,
       };
     } catch (error) {
       console.error('Error parsing FIREBASE_ADMIN_CREDENTIALS:', error);
@@ -46,9 +56,20 @@ export const getFirebaseAdminConfig = () => {
   }
   
   // Last resort: return empty config and let the application handle the error
+  const projectId = '';
+  const clientEmail = '';
+  const privateKey = '';
+  const storageBucket = process.env.FIREBASE_STORAGE_BUCKET || 
+                        (projectId ? `${projectId}.appspot.com` : undefined) ||
+                        process.env.CF_R2_BUCKET_NAME || // Try to use R2 bucket as fallback
+                        'contexto-uploads';
+
+  console.log(`Firebase Storage Bucket: ${storageBucket}`);
+
   return {
-    projectId: '',
-    clientEmail: '',
-    privateKey: '',
+    projectId,
+    clientEmail,
+    privateKey,
+    storageBucket,
   };
 };

@@ -82,7 +82,11 @@ export function getFirebaseAdmin() {
         clientEmail: config.clientEmail,
         privateKey: config.privateKey
       }),
+      storageBucket: config.storageBucket || `${config.projectId}.appspot.com` // Use config bucket or default
     });
+    
+    // Log the configured storage bucket for debugging
+    console.log(`Firebase Admin initialized with bucket: ${config.storageBucket || `${config.projectId}.appspot.com`}`);
     
     console.log('Firebase Admin SDK initialized successfully');
     return admin;

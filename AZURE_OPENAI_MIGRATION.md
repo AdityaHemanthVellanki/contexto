@@ -18,11 +18,14 @@ To run the application, you need to set the following environment variables:
 ```
 # Azure OpenAI Configuration
 AZURE_OPENAI_API_KEY=your-azure-openai-api-key
-AZURE_OPENAI_ENDPOINT=https://your-resource-name.openai.azure.com
-AZURE_OPENAI_DEPLOYMENT_EMBEDDING=your-embedding-deployment-name
-AZURE_OPENAI_DEPLOYMENT_TURBO=your-gpt-35-turbo-deployment-name
-AZURE_OPENAI_DEPLOYMENT_GPT4=your-gpt4-deployment-name
-AZURE_OPENAI_DEPLOYMENT_OMNI=your-gpt4-32k-deployment-name
+AZURE_OPENAI_ENDPOINT=https://openai-buildai.openai.azure.com
+
+# Use the exact deployment names from your Azure OpenAI Studio
+# Ensure the names match exactly - note the hyphens in deployment names
+AZURE_OPENAI_DEPLOYMENT_EMBEDDING=text-embedding-ada-002
+AZURE_OPENAI_DEPLOYMENT_TURBO=gpt-35-turbo
+AZURE_OPENAI_DEPLOYMENT_GPT4=gpt-4
+AZURE_OPENAI_DEPLOYMENT_OMNI=gpt-4o
 
 # Firebase Configuration (for auth and logging)
 FIREBASE_API_KEY=your-firebase-api-key
@@ -39,12 +42,14 @@ FIREBASE_SERVICE_ACCOUNT={"your":"service-account-json"}
 
 ## Azure OpenAI Deployments
 
-You need to create the following deployments in your Azure OpenAI resource:
+The following deployments are available in your Azure OpenAI resource:
 
-1. **Embedding Model**: For text embeddings (e.g., `text-embedding-ada-002`)
-2. **Turbo Model**: For chat completions (e.g., `gpt-35-turbo`)
-3. **GPT-4 Model**: For higher quality refinement (e.g., `gpt-4`)
-4. **Omni Model**: For handling longer contexts (e.g., `gpt-4-32k`)
+1. **`gpt-35-turbo`**: Standard chat model for most queries (note the hyphen format)
+2. **`gpt-4`**: Higher quality model for complex tasks
+3. **`gpt-4o`**: Latest GPT-4 Omni model 
+4. **`text-embedding-ada-002`**: Embedding model for vector search
+
+These specific deployment names must be used when configuring environment variables.
 
 ## Architecture Changes
 
@@ -109,9 +114,22 @@ Visit `/test` to test the pipeline execution and refinement functionality.
 
 ## Troubleshooting
 
-Common issues:
+Common issues and solutions:
 
-1. **Missing Environment Variables**: Ensure all required environment variables are set
-2. **Deployment Names**: Verify Azure OpenAI deployment names match environment variables
-3. **Rate Limits**: Azure OpenAI has specific rate limits based on your tier
-4. **Token Limits**: Ensure input content doesn't exceed model token limits
+1. **404 Errors**: The most common issue is when deployment names don't match exactly with what's in your Azure OpenAI Studio
+   - Solution: Use the exact names shown in the Azure Portal: `gpt-35-turbo`, `gpt-4`, `gpt-4o`, and `text-embedding-ada-002`
+   - Note that hyphens matter (`gpt-35-turbo` vs `gpt35-turbo`)
+
+2. **API Version Errors**: Azure OpenAI requires specific API versions
+   - Solution: All API calls include the `api-version=2023-12-01-preview` parameter
+
+3. **Embedding Failures**: If embeddings fail, the application uses a fallback search
+   - The fallback provides simulated results that allow the application to continue functioning
+   - Check Azure OpenAI Studio for any deployment issues or rate limits
+
+4. **Chat Completion Errors**: The app tries multiple deployment names in sequence
+   - If all fail, it provides a basic response based on available context
+   - Check Azure OpenAI logs for specific error messages
+
+5. **Firebase Integration**: This application uses Firebase for authentication and storage after the Supabase migration
+   - Ensure Firebase environment variables are correctly configured

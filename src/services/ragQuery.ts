@@ -1,27 +1,23 @@
 import { client, modelMapping } from '@/lib/azureOpenAI';
 import { logUsage } from './usage';
+import { encode } from 'gpt-tokenizer';
 
 /**
- * Runs a Retrieval-Augmented Generation (RAG) query using Azure OpenAI
+ * RAG/LLM-Query node - Generate answers based on retrieved chunks
  * 
  * @param chunks Array of context chunks for retrieval augmentation
  * @param question The user question to answer
- * @param userId Authenticated user ID for usage tracking
  * @returns Generated answer based on the retrieved context
- * @throws Error if the RAG query fails or if userId is not provided
+ * @throws Error if the RAG query fails
  */
-export async function runRAGQuery(chunks: string[], question: string, userId: string): Promise<string> {
+export async function runRAGQuery(chunks: string[], question: string): Promise<string> {
   // Input validation
   if (!chunks || !Array.isArray(chunks) || chunks.length === 0) {
-    throw new Error('RAG query requires context chunks');
+    throw new Error('RAG query failed: No context chunks provided');
   }
 
   if (!question || question.trim() === '') {
-    throw new Error('RAG query requires a valid question');
-  }
-
-  if (!userId) {
-    throw new Error('User ID is required for RAG query');
+    throw new Error('RAG query failed: No question provided');
   }
 
   try {
@@ -29,24 +25,29 @@ export async function runRAGQuery(chunks: string[], question: string, userId: st
     const messages = [
       {
         role: 'system' as const,
-        content: 'You are a retrieval-augmented generation assistant. Answer questions based on the provided context.'
+        content: 'You are a retrieval-augmented generation assistant.'
       },
       // Include each chunk as a separate user message for context
-      ...chunks.map(chunk => ({
-        role: 'user' as const,
-        content: `Context: ${chunk}`
+      ...chunks.map(c => ({
+        role: 'user' as const, 
+        content: c
       })),
-      // Add the actual user question
+      // Add the actual user question as the final message
       {
         role: 'user' as const,
-        content: `Question: ${question}\n\nAnswer the question based ONLY on the provided context. If the context doesn't contain the information needed, say so clearly.`
+        content: question
       }
     ];
 
-    // Check total token count - if too large, use the omni model
-    // This is a simplistic check; in production you would use a tokenizer
-    const totalText = messages.reduce((acc, msg) => acc + msg.content.length, 0);
-    const selectedModel = totalText > 12000 ? modelMapping.omni : modelMapping.turbo;
+    // Choose deployment based on token count
+    // Use the tokenizer to get an accurate count
+    const totalTokens = messages.reduce((acc, msg) => {
+      return acc + encode(msg.content).length;
+    }, 0);
+    
+    // Select deployment based on token count
+    const deploymentName = totalTokens > 16000 ? modelMapping.omni : modelMapping.turbo;
+    console.log(`Using ${deploymentName} model for RAG query (${totalTokens} tokens)`);
 
     // Ensure client is initialized
     if (!client) {
@@ -55,7 +56,7 @@ export async function runRAGQuery(chunks: string[], question: string, userId: st
     
     // Call Azure OpenAI chat completions API
     const response = await client.chat.completions.create({
-      model: selectedModel as string,
+      model: deploymentName,
       messages,
       temperature: 0.3,
       max_tokens: 1000
@@ -72,11 +73,11 @@ export async function runRAGQuery(chunks: string[], question: string, userId: st
       throw new Error('Empty answer returned from Azure OpenAI API');
     }
 
-    // Log usage with user ID
-    await logUsage('ragQuery', {
+    // Log usage with system user ID
+    await logUsage('rag', {
       promptTokens: response.usage?.prompt_tokens || 0,
       completionTokens: response.usage?.completion_tokens || 0
-    }, userId);
+    }, 'system');
 
     return answer;
   } catch (error) {
