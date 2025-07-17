@@ -1,5 +1,6 @@
 import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
+import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 
 /**
  * Token usage metrics interface
@@ -15,41 +16,59 @@ export interface TokenUsage {
  * @param callType Type of API call (embed, summarizer, ragQuery, refine)
  * @param usage Token usage statistics
  * @param userId Authenticated user ID
- * @throws Error if Firestore operation fails or if parameters are missing
+ * @returns Promise that resolves when logging is complete or fails gracefully
  */
 export async function logUsage(
   callType: string, 
   usage: TokenUsage,
   userId: string
 ): Promise<void> {
-  // Validate required parameters
-  if (!callType) {
-    throw new Error('Call type is required for usage logging');
+  // Quick validation (but don't throw errors)
+  if (!callType || !usage || !userId) {
+    console.warn('Missing parameters for usage logging');
+    return;
   }
   
-  if (!usage || typeof usage.promptTokens !== 'number' || typeof usage.completionTokens !== 'number') {
-    throw new Error('Valid token usage metrics are required for usage logging');
-  }
-  
-  if (!userId) {
-    throw new Error('User ID is required for usage logging');
-  }
+  // Check if we're in a browser environment
+  const isBrowser = typeof window !== 'undefined';
   
   try {
-    // Create usage metrics document with required user isolation
-    await addDoc(collection(db, 'usage_metrics'), {
-      userId,
-      callType,
-      promptTokens: usage.promptTokens,
-      completionTokens: usage.completionTokens,
-      totalTokens: usage.promptTokens + usage.completionTokens,
-      timestamp: serverTimestamp()
-    });
-  } catch (error) {
-    // In production, we throw errors for proper handling
-    if (error instanceof Error) {
-      throw new Error(`Failed to log usage metrics: ${error.message}`);
+    if (isBrowser) {
+      // Client-side Firebase SDK
+      try {
+        await addDoc(collection(db, 'usage_metrics'), {
+          userId,
+          callType,
+          promptTokens: usage.promptTokens,
+          completionTokens: usage.completionTokens,
+          totalTokens: usage.promptTokens + usage.completionTokens,
+          timestamp: serverTimestamp(),
+          environment: 'client'
+        });
+      } catch (clientError) {
+        // Log error but don't throw - client logging should not block execution
+        console.warn(`Client-side usage logging failed: ${clientError instanceof Error ? clientError.message : 'Unknown error'}`);
+      }
+    } else {
+      // Server-side Firebase Admin SDK
+      try {
+        const adminDb = getFirestore();
+        await adminDb.collection('usage_metrics').add({
+          userId,
+          callType,
+          promptTokens: usage.promptTokens,
+          completionTokens: usage.completionTokens,
+          totalTokens: usage.promptTokens + usage.completionTokens,
+          timestamp: FieldValue.serverTimestamp(),
+          environment: 'server'
+        });
+      } catch (serverError) {
+        // Log error but don't throw - server logging should not block execution
+        console.warn(`Server-side usage logging failed: ${serverError instanceof Error ? serverError.message : 'Unknown error'}`);
+      }
     }
-    throw new Error('Failed to log usage metrics: Unknown error');
+  } catch (error) {
+    // Super safety catch - never throw errors from logging
+    console.warn(`Usage logging failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
 }

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '@/context/AuthContext';
 import CanvasArea from '@/components/canvas/CanvasArea';
@@ -16,6 +17,7 @@ import ExportList from '@/components/data/ExportList';
 import ViewToggle from '@/components/layout/ViewToggle';
 import { ToastContainer, useToast } from '@/components/ui/toast';
 import { collection, query, where, orderBy, getDocs } from 'firebase/firestore';
+import { PipelineGeneratorPage } from '@/components/pipeline/PipelineGeneratorPage';
 import { FiUpload, FiFile, FiClock, FiDownload, FiPackage } from 'react-icons/fi';
 
 // Import Firebase client
@@ -35,7 +37,7 @@ export default function DashboardPage() {
   const { toast: addToast } = useToast();
   
   // State for the chat-centric layout
-  const [activeView, setActiveView] = useState<'chat' | 'advanced'>('chat');
+  const [activeView, setActiveView] = useState<'chat' | 'advanced' | 'pipeline'>('chat');
   const [importedData, setImportedData] = useState(false);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [pipelineCount, setPipelineCount] = useState(0);
@@ -115,7 +117,7 @@ export default function DashboardPage() {
   }, [user, authLoading, router]);
   
   // Handle view toggle
-  const handleViewChange = (view: 'chat' | 'advanced') => {
+  const handleViewChange = (view: 'chat' | 'advanced' | 'pipeline') => {
     setActiveView(view);
   };
   
@@ -191,89 +193,89 @@ export default function DashboardPage() {
         />
         
         <AnimatePresence mode="wait">
-          {/* Chat View */}
+          {/* Chat-Centric View */}
           {activeView === 'chat' && (
-            <motion.div 
+            <motion.div
               key="chat-view"
-              initial="hidden"
-              animate="visible"
-              variants={fadeInVariants}
-              className="flex-1"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              transition={{ duration: 0.3 }}
+              className="flex-1 flex flex-col"
             >
-              <div className="max-w-5xl mx-auto">
-                {/* Data Management Panel */}
-                <div className="mb-4 bg-gray-50 dark:bg-gray-800 rounded-lg p-3 border border-gray-200 dark:border-gray-700">
-                  <div className="flex justify-between items-center mb-3">
-                    <div className="flex space-x-2">
+              <div className="flex-1 grid grid-cols-1 md:grid-cols-3 gap-6">
+                <div className="md:col-span-1 flex flex-col space-y-6">
+                  {/* Data Files Section */}
+                  <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-4 flex-1 max-h-[500px] overflow-hidden flex flex-col">
+                    <div className="flex justify-between items-center mb-4">
+                      <div className="flex space-x-1">
+                        <button
+                          onClick={() => setActiveDataTab('files')}
+                          className={`px-3 py-1.5 text-xs rounded-lg flex items-center ${activeDataTab === 'files' ? 'bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700'}`}
+                        >
+                          <FiFile className="mr-1.5" /> Files
+                        </button>
+                        
+                        <button
+                          onClick={() => setActiveDataTab('exports')}
+                          className={`px-3 py-1.5 text-xs rounded-lg flex items-center ${activeDataTab === 'exports' ? 'bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700'}`}
+                        >
+                          <FiPackage className="mr-1.5" /> Exports
+                        </button>
+                      </div>
+                      
                       <button
-                        onClick={() => setActiveDataTab('files')}
-                        className={`text-sm font-medium flex items-center px-3 py-1.5 rounded-md ${activeDataTab === 'files' 
-                          ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300' 
-                          : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300'}`}
+                        onClick={handleOpenImportModal}
+                        className="text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 text-xs flex items-center"
                       >
-                        <FiFile className="mr-1.5" /> Files
-                      </button>
-                      <button
-                        onClick={() => setActiveDataTab('exports')}
-                        className={`text-sm font-medium flex items-center px-3 py-1.5 rounded-md ${activeDataTab === 'exports' 
-                          ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300' 
-                          : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300'}`}
-                      >
-                        <FiPackage className="mr-1.5" /> Exports
+                        <FiUpload className="mr-1" /> Import New
                       </button>
                     </div>
                     
-                    <button
-                      onClick={handleOpenImportModal}
-                      className="text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 text-xs flex items-center"
-                    >
-                      <FiUpload className="mr-1" /> Import New
-                    </button>
+                    <AnimatePresence mode="wait">
+                      {activeDataTab === 'files' ? (
+                        <motion.div
+                          key="files-tab"
+                          initial={{ opacity: 0 }}
+                          animate={{ opacity: 1 }}
+                          exit={{ opacity: 0 }}
+                          transition={{ duration: 0.2 }}
+                        >
+                          <FileList
+                            onSelectFile={handleFileSelect}
+                            activeFileId={activeFileId}
+                            refreshTrigger={refreshTrigger}
+                            onFilesLoaded={(hasFiles) => {
+                              // Update importedData state when files are loaded
+                              setImportedData(hasFiles);
+                              if (hasFiles && !activeFileId) {
+                                // Auto-select the first file if none is selected
+                                setHasFilesLoaded(true);
+                              }
+                            }}
+                          />
+                        </motion.div>
+                      ) : (
+                        <motion.div
+                          key="exports-tab"
+                          initial={{ opacity: 0 }}
+                          animate={{ opacity: 1 }}
+                          exit={{ opacity: 0 }}
+                          transition={{ duration: 0.2 }}
+                        >
+                          <ExportList refreshTrigger={refreshTrigger} />
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
                   </div>
                   
-                  <AnimatePresence mode="wait">
-                    {activeDataTab === 'files' ? (
-                      <motion.div
-                        key="files-tab"
-                        initial={{ opacity: 0 }}
-                        animate={{ opacity: 1 }}
-                        exit={{ opacity: 0 }}
-                        transition={{ duration: 0.2 }}
-                      >
-                        <FileList
-                          onSelectFile={handleFileSelect}
-                          activeFileId={activeFileId}
-                          refreshTrigger={refreshTrigger}
-                          onFilesLoaded={(hasFiles) => {
-                            // Update importedData state when files are loaded
-                            setImportedData(hasFiles);
-                            if (hasFiles && !activeFileId) {
-                              // Auto-select the first file if none is selected
-                              setHasFilesLoaded(true);
-                            }
-                          }}
-                        />
-                      </motion.div>
-                    ) : (
-                      <motion.div
-                        key="exports-tab"
-                        initial={{ opacity: 0 }}
-                        animate={{ opacity: 1 }}
-                        exit={{ opacity: 0 }}
-                        transition={{ duration: 0.2 }}
-                      >
-                        <ExportList refreshTrigger={refreshTrigger} />
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
+                  <ChatInterface 
+                    onShowAdvancedView={() => setActiveView('advanced')} 
+                    importedData={importedData}
+                    onImportData={handleOpenImportModal}
+                    activeFileId={activeFileId}
+                  />
                 </div>
-                
-                <ChatInterface 
-                  onShowAdvancedView={() => setActiveView('advanced')} 
-                  importedData={importedData}
-                  onImportData={handleOpenImportModal}
-                  activeFileId={activeFileId}
-                />
               </div>
             </motion.div>
           )}
@@ -290,9 +292,25 @@ export default function DashboardPage() {
             >
               <div className="max-w-6xl mx-auto">
                 {/* Header */}
-                <div className="text-center mb-6">
-                  <h1 className="text-2xl font-bold text-gray-800 dark:text-gray-200">Pipeline Builder</h1>
-                  <p className="text-gray-500 dark:text-gray-400">Design your AI context pipelines visually</p>
+                <div className="mb-8">
+                  <h1 className="text-3xl font-bold text-gray-900 dark:text-white mb-2">Dashboard</h1>
+                  <p className="text-gray-600 dark:text-gray-400">Manage your data and build MCP pipelines</p>
+                  
+                  {/* Chat Builder CTA */}
+                  <div className="mt-4 p-4 bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-900/20 dark:to-indigo-900/20 rounded-lg border border-blue-200 dark:border-blue-800">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <h3 className="text-lg font-semibold text-blue-900 dark:text-blue-100"> New: Chat-Driven Pipeline Builder</h3>
+                        <p className="text-blue-700 dark:text-blue-300 text-sm mt-1">Build MCP pipelines through guided conversation - no technical knowledge required!</p>
+                      </div>
+                      <Link 
+                        href="/chat" 
+                        className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors"
+                      >
+                        Try Chat Builder
+                      </Link>
+                    </div>
+                  </div>
                 </div>
                 
                 {/* Main Content Area */}
@@ -308,6 +326,20 @@ export default function DashboardPage() {
                   </div>
                 </div>
               </div>
+            </motion.div>
+          )}
+          
+          {/* Pipeline Generator View */}
+          {activeView === 'pipeline' && (
+            <motion.div
+              key="pipeline-view"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              transition={{ duration: 0.3 }}
+              className="flex-1"
+            >
+              <PipelineGeneratorPage className="h-full" />
             </motion.div>
           )}
         </AnimatePresence>

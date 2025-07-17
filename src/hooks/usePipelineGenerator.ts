@@ -1,106 +1,138 @@
 import { useState } from 'react';
-import { client, modelMapping } from '@/lib/azureOpenAI';
-import { Node, Edge } from 'reactflow';
-import { NodeData } from '@/store/useCanvasStore';
+import { 
+  PipelineGenerationResponse, 
+  PipelineGenerationRequest,
+  PipelineGenerationResponseSchema,
+  ChatMessage 
+} from '@/types/pipeline';
+import { useToast } from '@/hooks/useToast';
 
 interface PipelineGeneratorResult {
-  nodes: Node<NodeData>[];
-  edges: Edge[];
+  pipelineJson: PipelineGenerationResponse['pipelineJson'];
+  reasoning?: string;
 }
 
 export function usePipelineGenerator() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<Error | null>(null);
+  const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
+  const { toast } = useToast();
   
   /**
    * Generates a pipeline configuration based on a natural language description
-   * Uses Azure OpenAI to generate the node structure and connections
+   * Uses the /api/generatePipeline endpoint with Azure OpenAI
    * 
-   * @param description Natural language description of the desired pipeline
-   * @returns Generated nodes and edges
+   * @param prompt Natural language description of the desired pipeline
+   * @returns Generated pipeline configuration
    */
-  const generatePipeline = async (description: string): Promise<PipelineGeneratorResult> => {
+  const generatePipeline = async (prompt: string): Promise<PipelineGeneratorResult> => {
     setIsLoading(true);
     setError(null);
     
+    // Add user message to chat history
+    const userMessage: ChatMessage = {
+      id: `user-${Date.now()}`,
+      role: 'user',
+      content: prompt,
+      timestamp: new Date()
+    };
+    
+    setChatHistory(prev => [...prev, userMessage]);
+    
     try {
-      // Call Azure OpenAI to generate pipeline configuration
-      const response = await client.chat.completions.create({
-        model: modelMapping.refine as string,
-        messages: [
-          {
-            role: 'system',
-            content: `You are a pipeline generator assistant. Generate a valid RAG pipeline configuration based on the user's description.
-              The pipeline should have nodes of these types: dataSource, chunker, embedder, indexer, retriever, output.
-              Format the response as JSON with 'nodes' and 'edges' arrays following React Flow's format.
-              For nodes: { id: string, type: string, position: {x, y}, data: { type: string, label: string, settings: {} } }
-              For edges: { id: string, source: string, target: string, type: 'smoothstep' }
-              Position nodes in a logical left-to-right flow with appropriate spacing.`
-          },
-          {
-            role: 'user',
-            content: description
-          }
-        ],
-        temperature: 0.2,
-        response_format: { type: "json_object" }
+      // Call the API route
+      const response = await fetch('/api/generatePipeline', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ prompt } as PipelineGenerationRequest)
       });
       
-      // Extract the JSON response
-      const content = response.choices[0]?.message?.content;
-      
-      if (!content) {
-        throw new Error('No content returned from pipeline generator');
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+        throw new Error(errorData.error || `HTTP ${response.status}: ${response.statusText}`);
       }
       
-      // Parse the JSON response
-      const pipelineConfig = JSON.parse(content);
+      const data = await response.json();
       
-      // Validate the response structure
-      if (!pipelineConfig.nodes || !Array.isArray(pipelineConfig.nodes) || !pipelineConfig.edges || !Array.isArray(pipelineConfig.edges)) {
-        throw new Error('Invalid pipeline configuration format');
-      }
+      // Validate the response using Zod
+      const validatedResponse = PipelineGenerationResponseSchema.parse(data);
       
-      // Process the nodes to ensure they have all required properties
-      const processedNodes = pipelineConfig.nodes.map((node: any) => ({
-        ...node,
-        // Ensure node has all required properties
-        id: node.id || `node-${Math.random().toString(36).substring(2, 9)}`,
-        type: node.type || 'dataSource',
-        position: node.position || { x: 0, y: 0 },
-        data: {
-          type: node.data?.type || node.type || 'dataSource',
-          label: node.data?.label || `New ${node.type || 'Node'}`,
-          settings: node.data?.settings || {}
+      // Add assistant message to chat history
+      const assistantMessage: ChatMessage = {
+        id: `assistant-${Date.now()}`,
+        role: 'assistant',
+        content: validatedResponse.reasoning || 'Pipeline generated successfully!',
+        timestamp: new Date(),
+        metadata: {
+          pipelineGenerated: true
         }
-      }));
+      };
       
-      // Process the edges to ensure they have all required properties
-      const processedEdges = pipelineConfig.edges.map((edge: any) => ({
-        ...edge,
-        // Ensure edge has all required properties
-        id: edge.id || `edge-${edge.source}-${edge.target}`,
-        type: edge.type || 'smoothstep',
-        animated: true,
-        style: { stroke: '#2563eb', strokeWidth: 2 }
-      }));
+      setChatHistory(prev => [...prev, assistantMessage]);
+      
+      toast({
+        title: 'Pipeline Generated',
+        description: `Created ${validatedResponse.pipelineJson.nodes.length} nodes and ${validatedResponse.pipelineJson.edges.length} connections`,
+        variant: 'default'
+      });
       
       return {
-        nodes: processedNodes,
-        edges: processedEdges
+        pipelineJson: validatedResponse.pipelineJson,
+        reasoning: validatedResponse.reasoning
       };
     } catch (err) {
       const error = err instanceof Error ? err : new Error('Unknown error in pipeline generation');
       setError(error);
+      
+      // Add error message to chat history
+      const errorMessage: ChatMessage = {
+        id: `error-${Date.now()}`,
+        role: 'assistant',
+        content: `Pipeline generation failed: ${error.message}`,
+        timestamp: new Date()
+      };
+      
+      setChatHistory(prev => [...prev, errorMessage]);
+      
+      toast({
+        title: 'Pipeline Generation Failed',
+        description: error.message,
+        variant: 'destructive'
+      });
+      
       throw error;
     } finally {
       setIsLoading(false);
     }
   };
   
+  /**
+   * Clears the chat history
+   */
+  const clearChatHistory = () => {
+    setChatHistory([]);
+  };
+  
+  /**
+   * Adds a message to chat history (for manual additions)
+   */
+  const addMessage = (message: Omit<ChatMessage, 'id' | 'timestamp'>) => {
+    const fullMessage: ChatMessage = {
+      ...message,
+      id: `${message.role}-${Date.now()}`,
+      timestamp: new Date()
+    };
+    setChatHistory(prev => [...prev, fullMessage]);
+  };
+  
   return {
     generatePipeline,
     isLoading,
-    error
+    error,
+    chatHistory,
+    clearChatHistory,
+    addMessage
   };
 }

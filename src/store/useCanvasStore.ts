@@ -50,6 +50,7 @@ interface CanvasState {
   resetCanvas: () => void;
   initializeCanvas: () => void;
   deleteEdge: (edgeId: string) => void;
+  loadGeneratedPipeline: (pipelineJson: any) => void;
 }
 
 // Default canvas settings
@@ -216,5 +217,53 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
   deleteEdge: (edgeId) => 
     set({
       edges: (get().edges || []).filter((edge) => edge.id !== edgeId)
-    })
+    }),
+  
+  // Load a generated pipeline into the canvas
+  loadGeneratedPipeline: (pipelineJson) => {
+    try {
+      // Convert generated nodes to canvas format
+      const canvasNodes: Node<NodeData>[] = (pipelineJson.nodes || []).map((node: any) => ({
+        id: node.id,
+        type: node.type.toLowerCase(), // Ensure lowercase for node types
+        position: node.position,
+        data: {
+          type: node.type.toLowerCase(),
+          label: node.data?.label || `${node.type} Node`,
+          settings: node.data?.config || {}
+        }
+      }));
+      
+      // Convert generated edges to canvas format
+      const canvasEdges: Edge[] = (pipelineJson.edges || []).map((edge: any) => ({
+        id: edge.id,
+        source: edge.source,
+        target: edge.target,
+        type: edge.type || 'smoothstep',
+        animated: edge.animated !== false,
+        style: { stroke: '#2563eb', strokeWidth: 2 }
+      }));
+      
+      // Update pipeline name if provided
+      const pipelineName = pipelineJson.metadata?.name || 'Generated Pipeline';
+      
+      set({
+        nodes: canvasNodes,
+        edges: canvasEdges,
+        selectedNode: null,
+        canvasSettings: {
+          ...get().canvasSettings,
+          pipelineName
+        }
+      });
+    } catch (error) {
+      console.error('Failed to load generated pipeline:', error);
+      // Fallback to empty canvas on error
+      set({
+        nodes: [],
+        edges: [],
+        selectedNode: null
+      });
+    }
+  }
 }));

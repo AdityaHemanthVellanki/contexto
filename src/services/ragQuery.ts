@@ -76,11 +76,16 @@ export async function runRAGQuery(chunks: string[], question: string): Promise<s
       throw new Error('Empty answer returned from Azure OpenAI API');
     }
 
-    // Log usage with system user ID
-    await logUsage('rag', {
-      promptTokens: response.usage?.prompt_tokens || 0,
-      completionTokens: response.usage?.completion_tokens || 0
-    }, 'system');
+    // Log usage with system user ID - wrapped in try/catch to handle permission errors
+    try {
+      await logUsage('rag', {
+        promptTokens: response.usage?.prompt_tokens || 0,
+        completionTokens: response.usage?.completion_tokens || 0
+      }, 'system');
+    } catch (logError) {
+      // Continue even if logging fails
+      console.warn('Failed to log usage metrics:', logError instanceof Error ? logError.message : 'Unknown error');
+    }
 
     return answer;
   } catch (error) {

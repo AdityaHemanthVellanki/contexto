@@ -2,17 +2,17 @@
 
 import { useState, useCallback } from 'react';
 import { motion } from 'framer-motion';
-import { FiMessageSquare, FiGrid } from 'react-icons/fi';
+import { FiMessageSquare, FiGrid, FiZap } from 'react-icons/fi';
 import { cn } from '@/utils/cn';
 
 interface ViewToggleProps {
-  activeView: 'chat' | 'advanced';
-  onViewChange: (view: 'chat' | 'advanced') => void;
+  activeView: 'chat' | 'advanced' | 'pipeline';
+  onViewChange: (view: 'chat' | 'advanced' | 'pipeline') => void;
   className?: string;
 }
 
 export default function ViewToggle({ activeView, onViewChange, className }: ViewToggleProps) {
-  const handleToggle = useCallback((view: 'chat' | 'advanced') => {
+  const handleToggle = useCallback((view: 'chat' | 'advanced' | 'pipeline') => {
     if (view !== activeView) {
       onViewChange(view);
     }
@@ -31,6 +31,12 @@ export default function ViewToggle({ activeView, onViewChange, className }: View
         label="Advanced"
         isActive={activeView === 'advanced'}
         onClick={() => handleToggle('advanced')}
+      />
+      <ViewButton
+        icon={<FiZap />}
+        label="Pipeline"
+        isActive={activeView === 'pipeline'}
+        onClick={() => handleToggle('pipeline')}
       />
     </div>
   );
