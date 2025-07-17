@@ -1,4 +1,4 @@
-import { client, modelMapping } from '@/lib/azureOpenAI';
+import client, { modelMapping } from '@/lib/azureOpenAI.server';
 import { logUsage } from './usage';
 import { encode } from 'gpt-tokenizer';
 
@@ -55,11 +55,14 @@ export async function runRAGQuery(chunks: string[], question: string): Promise<s
     }
     
     // Call Azure OpenAI chat completions API
+    // For Azure OpenAI, we need to use the deploymentId format
     const response = await client.chat.completions.create({
       model: deploymentName,
       messages,
       temperature: 0.3,
       max_tokens: 1000
+    }, {
+      path: `/openai/deployments/${deploymentName}/chat/completions`
     });
 
     // Validate response

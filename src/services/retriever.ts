@@ -1,5 +1,5 @@
 import { getFirestore } from 'firebase-admin/firestore';
-import { client, modelMapping } from '@/lib/azureOpenAI';
+import client, { modelMapping, AZURE_OPENAI_DEPLOYMENT_EMBEDDING } from '@/lib/azureOpenAI.server';
 import { logUsage } from './usage';
 
 /**
@@ -50,15 +50,15 @@ export async function runRetriever(
 
   try {
     // Generate embedding for the query using Azure OpenAI
-    if (!client) {
-      throw new Error('Azure OpenAI client is not initialized');
-    }
-
     console.log(`Generating embedding for query: "${query.substring(0, 50)}..."`);
+    console.log(`Using Azure OpenAI deployment: ${AZURE_OPENAI_DEPLOYMENT_EMBEDDING}`);
     
+    // For Azure OpenAI, we need to use the deploymentId format
     const embeddingResponse = await client.embeddings.create({
-      model: modelMapping.embed,
+      model: AZURE_OPENAI_DEPLOYMENT_EMBEDDING as string,
       input: [query]
+    }, {
+      path: `/openai/deployments/${AZURE_OPENAI_DEPLOYMENT_EMBEDDING}/embeddings`
     });
 
     if (!embeddingResponse.data || embeddingResponse.data.length === 0) {
@@ -66,10 +66,15 @@ export async function runRetriever(
     }
 
     // Log usage for embedding generation
-    await logUsage('embed', {
-      promptTokens: embeddingResponse.usage?.prompt_tokens || 0,
-      completionTokens: 0
-    }, 'system');
+    try {
+      await logUsage('embed', {
+        promptTokens: embeddingResponse.usage?.prompt_tokens || 0,
+        completionTokens: 0
+      }, 'system');
+    } catch (logError) {
+      // Continue even if logging fails
+      console.warn('Failed to log usage metrics:', logError instanceof Error ? logError.message : 'Unknown error');
+    }
 
     const queryVector = embeddingResponse.data[0].embedding;
     
@@ -106,9 +111,18 @@ export async function runRetriever(
     
     return topChunks;
   } catch (e) {
-    if (e instanceof Error) {
-      throw new Error(`Retriever failed: ${e.message}`);
+    const errorMessage = e instanceof Error ? e.message : String(e);
+    console.error('Retriever failed:', errorMessage);
+    
+    // Provide specific error guidance
+    if (errorMessage.includes('404')) {
+      console.error(`❌ 404 Error: Check that AZURE_OPENAI_DEPLOYMENT_EMBEDDING (${AZURE_OPENAI_DEPLOYMENT_EMBEDDING}) matches your Azure portal deployment name exactly.`);
+    } else if (errorMessage.includes('401')) {
+      console.error('❌ 401 Error: Check your AZURE_OPENAI_API_KEY is correct.');
+    } else if (errorMessage.includes('403')) {
+      console.error('❌ 403 Error: Check your Azure OpenAI permissions and quota.');
     }
-    throw new Error('Retriever failed: Unknown error');
+    
+    throw new Error(`Retriever failed: ${errorMessage}`);
   }
 }

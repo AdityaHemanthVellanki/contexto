@@ -94,11 +94,28 @@ export async function POST(request: Request) {
         }
         
         // Handle embedding/Azure OpenAI errors
-        if (errorMessage.includes('Azure OpenAI') || errorMessage.includes('Embedder failed')) {
-          return NextResponse.json(
-            { error: 'Embedding generation failed - Please check your Azure OpenAI configuration' },
-            { status: 500 }
-          );
+        if (errorMessage.includes('Failed to generate embeddings') || errorMessage.includes('Embedder failed') || errorMessage.includes('Retriever failed')) {
+          if (errorMessage.includes('404')) {
+            return NextResponse.json(
+              { error: 'Azure OpenAI deployment not found - Check your AZURE_OPENAI_DEPLOYMENT_EMBEDDING matches your Azure portal deployment name exactly' },
+              { status: 404 }
+            );
+          } else if (errorMessage.includes('401')) {
+            return NextResponse.json(
+              { error: 'Azure OpenAI authentication failed - Check your AZURE_OPENAI_API_KEY is correct' },
+              { status: 401 }
+            );
+          } else if (errorMessage.includes('403')) {
+            return NextResponse.json(
+              { error: 'Azure OpenAI access denied - Check your permissions and quota' },
+              { status: 403 }
+            );
+          } else {
+            return NextResponse.json(
+              { error: 'Azure OpenAI service error - Please check your configuration and try again' },
+              { status: 500 }
+            );
+          }
         }
         
         // Generic pipeline error
