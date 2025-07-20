@@ -69,8 +69,13 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     // Return the execution result
     return NextResponse.json({
       success: true,
-      result: pipelineResult.result,
-      usage: pipelineResult.usageReport.total
+      result: pipelineResult.answer,
+      retrieved: pipelineResult.retrieved,
+      usage: {
+        tokens: 0,  // We don't have usage data in the new format
+        model: 'pipeline-execution',
+        timestamp: new Date().toISOString()
+      }
     });
   } catch (error: any) {
     console.error('Error running pipeline:', error);

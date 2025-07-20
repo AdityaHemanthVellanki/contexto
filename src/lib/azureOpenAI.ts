@@ -17,7 +17,8 @@ export const modelMapping = {
   'gpt-35-turbo': 'gpt-35-turbo',
   // Add client-side placeholders for omni and turbo
   omni: 'gpt-4',
-  turbo: 'gpt-35-turbo'
+  turbo: 'gpt-35-turbo',
+  refine: 'gpt-4'
 };
 
 // Safe placeholder for embedding deployment name

@@ -52,12 +52,21 @@ export default function ChatPromptTab() {
       // Add assistant message with response
       setChatHistory(prev => [...prev, {
         role: 'assistant',
-        content: `Created pipeline with ${result.nodes.length} nodes and ${result.edges.length} connections. You can now configure the nodes on the canvas.`
+        content: `Created pipeline with ${result.pipelineJson.nodes.length} nodes and ${result.pipelineJson.edges.length} connections. You can now configure the nodes on the canvas.`
       }]);
       
-      // Update the canvas with generated nodes and edges
-      setNodes(result.nodes);
-      setEdges(result.edges);
+      // Transform the pipeline nodes to match the React Flow node format
+      const transformedNodes = result.pipelineJson.nodes.map(node => ({
+        ...node,
+        data: {
+          ...node.data,
+          type: node.type, // Ensure type is in the data object as required by NodeData
+        }
+      }));
+      
+      // Update the canvas with transformed nodes and edges
+      setNodes(transformedNodes);
+      setEdges(result.pipelineJson.edges);
       
       toast({
         title: "Pipeline Generated",

@@ -32,7 +32,8 @@ export const modelMapping = {
   'gpt-35-turbo': process.env.AZURE_OPENAI_DEPLOYMENT_TURBO || 'gpt-35-turbo',
   // Add missing properties used in RAG query
   omni: process.env.AZURE_OPENAI_DEPLOYMENT_GPT4 || 'gpt-4',
-  turbo: process.env.AZURE_OPENAI_DEPLOYMENT_TURBO || 'gpt-35-turbo'
+  turbo: process.env.AZURE_OPENAI_DEPLOYMENT_TURBO || 'gpt-35-turbo',
+  refine: process.env.AZURE_OPENAI_DEPLOYMENT_GPT4 || 'gpt-4'
 };
 
 // Create Azure OpenAI client with validated environment variables

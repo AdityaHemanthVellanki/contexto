@@ -25,6 +25,7 @@ export default function TestPanel() {
       nodes: nodes.map(node => ({
         id: node.id,
         type: node.type as 'dataSource' | 'chunker' | 'embedder' | 'indexer' | 'retriever' | 'output',
+        position: { x: node.position.x, y: node.position.y },
         data: {
           type: node.data.type,
           label: node.data.label,

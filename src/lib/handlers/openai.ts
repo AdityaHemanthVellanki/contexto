@@ -1,4 +1,4 @@
-import { client, modelMapping } from '@/lib/azureOpenAI';
+import client, { modelMapping } from '@/lib/azureOpenAI.server';
 
 /**
  * Interface for usage reporting
@@ -44,7 +44,7 @@ export const runEmbedder = async (
     }
 
     return {
-      embeddings: response.data.map(item => item.embedding),
+      embeddings: response.data.map((item: { embedding: number[] }) => item.embedding),
       usage: {
         promptTokens: response.usage.prompt_tokens,
         completionTokens: 0,

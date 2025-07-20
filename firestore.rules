@@ -61,5 +61,24 @@ service cloud.firestore {
       allow read: if false;
       allow update, delete: if false;
     }
+    
+    // Conversations: only the owner can access their own conversation sessions
+    match /conversations/{sessionId} {
+      allow create: if request.auth != null && request.auth.uid == request.resource.data.userId;
+      allow read, update: if request.auth != null && request.auth.uid == resource.data.userId;
+      allow delete: if request.auth != null && request.auth.uid == resource.data.userId;
+      
+      // Messages subcollection: each message belongs to the user who owns the parent conversation
+      match /messages/{messageId} {
+        allow create: if request.auth != null && 
+                      get(/databases/$(database)/documents/conversations/$(sessionId)).data.userId == request.auth.uid;
+        allow read: if request.auth != null && 
+                    get(/databases/$(database)/documents/conversations/$(sessionId)).data.userId == request.auth.uid;
+        allow update: if request.auth != null && 
+                      get(/databases/$(database)/documents/conversations/$(sessionId)).data.userId == request.auth.uid;
+        allow delete: if request.auth != null && 
+                      get(/databases/$(database)/documents/conversations/$(sessionId)).data.userId == request.auth.uid;
+      }
+    }
   }
 }

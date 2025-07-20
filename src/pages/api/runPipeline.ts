@@ -14,6 +14,7 @@ interface RequestBody {
 interface ResponseData {
   result: any;
   response?: any; // Added for chat interface compatibility
+  retrieved?: string[];
   usageReport?: Record<string, any>;
   error?: string;
 }
@@ -180,14 +181,23 @@ export default async function handler(
       }
       
       // Standard pipeline execution
-      // Use non-null assertion since we've already checked graph is defined for non-chat mode
-      const { result, usageReport } = await executePipeline(graph!, prompt, userId);
+      // Extract the file ID from the graph's data source node
+      const dataSourceNode = graph?.nodes.find(node => node.type === 'dataSource');
+      const fileId = dataSourceNode?.data?.settings?.fileId || 'default-file-id';
+      
+      // Execute the pipeline with the extracted file ID
+      const pipelineResult = await executePipeline(fileId, prompt, userId);
 
       // Return the results
       return res.status(200).json({
-        result,
-        response: result, // For chat interface compatibility
-        usageReport
+        result: pipelineResult.answer,
+        response: pipelineResult.answer, // For chat interface compatibility
+        retrieved: pipelineResult.retrieved,
+        usageReport: {
+          tokens: prompt.length / 4, // Rough estimate
+          model: 'pipeline-execution',
+          timestamp: new Date().toISOString()
+        }
       });
     } catch (executionError) {
       console.error('Pipeline execution error:', executionError);

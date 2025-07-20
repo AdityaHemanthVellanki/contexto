@@ -38,16 +38,43 @@ export function getFirebaseAdmin() {
   
   try {
     // For development environment, we can use the Firebase emulators
-    if (process.env.NODE_ENV === 'development' && process.env.FIREBASE_AUTH_EMULATOR_HOST) {
-      console.log('Using Firebase emulator for development');
-      process.env.FIREBASE_AUTH_EMULATOR_HOST = process.env.FIREBASE_AUTH_EMULATOR_HOST || 'localhost:9099';
-      process.env.FIRESTORE_EMULATOR_HOST = process.env.FIRESTORE_EMULATOR_HOST || 'localhost:8080';
+    if (process.env.NODE_ENV === 'development') {
+      console.log('Using Firebase Admin for development');
       
-      admin.initializeApp({
-        projectId: config.projectId
-      });
+      // Check if emulators are configured
+      const useEmulators = process.env.FIREBASE_AUTH_EMULATOR_HOST || process.env.FIRESTORE_EMULATOR_HOST;
       
-      console.log('Firebase Admin SDK initialized with emulator settings');
+      if (useEmulators) {
+        console.log('Using Firebase emulators for development');
+        process.env.FIREBASE_AUTH_EMULATOR_HOST = process.env.FIREBASE_AUTH_EMULATOR_HOST || 'localhost:9099';
+        process.env.FIRESTORE_EMULATOR_HOST = process.env.FIRESTORE_EMULATOR_HOST || 'localhost:8080';
+        
+        admin.initializeApp({
+          projectId: config.projectId
+        });
+        
+        console.log('Firebase Admin SDK initialized with emulator settings');
+      } else {
+        // For development without emulators, use credentials if available
+        if (config.clientEmail && config.privateKey) {
+          console.log('Initializing Firebase Admin with credentials in development mode');
+          admin.initializeApp({
+            credential: cert({
+              projectId: config.projectId,
+              clientEmail: config.clientEmail,
+              privateKey: config.privateKey
+            }),
+            storageBucket: config.storageBucket || `${config.projectId}.appspot.com`
+          });
+        } else {
+          // Fallback to application default credentials or project ID only
+          console.log('Initializing Firebase Admin with project ID only in development mode');
+          admin.initializeApp({
+            projectId: config.projectId
+          });
+        }
+      }
+      
       return admin;
     }
     

@@ -7,6 +7,29 @@ import { runRAGQuery } from './ragQuery';
 import { runOutput } from './output';
 
 /**
+ * Graph interface representing the pipeline structure
+ */
+export interface Graph {
+  nodes: Node[];
+  edges: Edge[];
+  viewport?: { x: number; y: number; zoom: number };
+}
+
+export interface Node {
+  id: string;
+  type: string;
+  position: { x: number; y: number };
+  data: Record<string, any>;
+}
+
+export interface Edge {
+  id: string;
+  source: string;
+  target: string;
+  type?: string;
+}
+
+/**
  * Pipeline Executor - Main orchestration function for MCP data processing
  * 
  * @param fileId The ID of the file to process

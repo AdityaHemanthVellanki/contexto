@@ -73,6 +73,11 @@ export async function POST(request: NextRequest) {
     
     const uploadData = uploadDoc.data();
     
+    // Ensure uploadData exists
+    if (!uploadData) {
+      return NextResponse.json({ message: 'Invalid file data' }, { status: 500 });
+    }
+    
     // Check file ownership (allow admin access too)
     if (uploadData.userId !== userId && userId !== process.env.ADMIN_USER_ID) {
       return NextResponse.json({ message: 'Not authorized to access this file' }, { status: 403 });

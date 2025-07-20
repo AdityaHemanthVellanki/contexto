@@ -332,7 +332,11 @@ export default function ChatWindow({ className }: ChatWindowProps) {
                   </div>
                 )}
                 <div className="mt-1 text-xs opacity-70">
-                  {message.timestamp.toLocaleTimeString()}
+                  {typeof message.timestamp === 'string' 
+                    ? new Date(message.timestamp).toLocaleTimeString() 
+                    : message.timestamp instanceof Date 
+                      ? message.timestamp.toLocaleTimeString()
+                      : new Date().toLocaleTimeString()}
                 </div>
               </div>
             </motion.div>

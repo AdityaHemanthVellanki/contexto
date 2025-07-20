@@ -1,4 +1,4 @@
-import { client, modelMapping } from '@/lib/azureOpenAI';
+import client, { modelMapping } from '@/lib/azureOpenAI.server';
 import { logUsage } from './usage';
 
 /**
