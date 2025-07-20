@@ -1,0 +1,309 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { z } from 'zod';
+import { getFirestoreAdmin } from '@/lib/firestore-admin';
+import { authenticateRequest } from '@/lib/api-auth';
+import { rateLimit } from '@/lib/rate-limiter-memory';
+
+// Request schema validation
+const DeployVectorStoreSchema = z.object({
+  fileId: z.string().min(1),
+  pipelineId: z.string().min(1)
+});
+
+// Vector store factory function
+function getVectorStore(sizeBytes: number, purpose: string): { type: string; priority: number } {
+  // Intelligent vector store selection based on file size and purpose
+  if (sizeBytes > 50 * 1024 * 1024) { // > 50MB
+    return { type: 'pinecone', priority: 1 }; // Best for large datasets
+  } else if (purpose.toLowerCase().includes('real-time') || purpose.toLowerCase().includes('chat')) {
+    return { type: 'qdrant', priority: 2 }; // Best for real-time applications
+  } else if (purpose.toLowerCase().includes('analytics') || purpose.toLowerCase().includes('search')) {
+    return { type: 'supabase', priority: 3 }; // Good for analytics workloads
+  } else {
+    return { type: 'firestore', priority: 4 }; // Fallback for simple use cases
+  }
+}
+
+// Pinecone index creation
+async function createPineconeIndex(pipelineId: string): Promise<string> {
+  const apiKey = process.env.PINECONE_API_KEY;
+  const environment = process.env.PINECONE_ENVIRONMENT || 'us-east1-gcp';
+  
+  if (!apiKey) {
+    throw new Error('Pinecone API key not configured');
+  }
+
+  const indexName = `contexto-${pipelineId}`.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+  
+  try {
+    // Check if index already exists
+    const listResponse = await fetch(`https://api.pinecone.io/indexes`, {
+      headers: {
+        'Api-Key': apiKey,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    if (listResponse.ok) {
+      const indexes = await listResponse.json();
+      const existingIndex = indexes.indexes?.find((idx: any) => idx.name === indexName);
+      if (existingIndex) {
+        return `https://${indexName}-${environment}.svc.${environment}.pinecone.io`;
+      }
+    }
+
+    // Create new index
+    const createResponse = await fetch(`https://api.pinecone.io/indexes`, {
+      method: 'POST',
+      headers: {
+        'Api-Key': apiKey,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        name: indexName,
+        dimension: 1536, // OpenAI embedding dimension
+        metric: 'cosine',
+        pods: 1,
+        replicas: 1,
+        pod_type: 'p1.x1'
+      })
+    });
+
+    if (!createResponse.ok) {
+      const error = await createResponse.text();
+      throw new Error(`Pinecone index creation failed: ${error}`);
+    }
+
+    return `https://${indexName}-${environment}.svc.${environment}.pinecone.io`;
+  } catch (error) {
+    console.error('Pinecone deployment error:', error);
+    throw error;
+  }
+}
+
+// Qdrant collection creation
+async function createQdrantCollection(pipelineId: string): Promise<string> {
+  const apiKey = process.env.QDRANT_API_KEY;
+  const url = process.env.QDRANT_URL;
+  
+  if (!apiKey || !url) {
+    throw new Error('Qdrant credentials not configured');
+  }
+
+  const collectionName = `contexto-${pipelineId}`.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+  
+  try {
+    // Check if collection already exists
+    const getResponse = await fetch(`${url}/collections/${collectionName}`, {
+      headers: {
+        'api-key': apiKey,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    if (getResponse.ok) {
+      return `${url}/collections/${collectionName}`;
+    }
+
+    // Create new collection
+    const createResponse = await fetch(`${url}/collections/${collectionName}`, {
+      method: 'PUT',
+      headers: {
+        'api-key': apiKey,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        vectors: {
+          size: 1536, // OpenAI embedding dimension
+          distance: 'Cosine'
+        },
+        optimizers_config: {
+          default_segment_number: 2
+        },
+        replication_factor: 1
+      })
+    });
+
+    if (!createResponse.ok) {
+      const error = await createResponse.text();
+      throw new Error(`Qdrant collection creation failed: ${error}`);
+    }
+
+    return `${url}/collections/${collectionName}`;
+  } catch (error) {
+    console.error('Qdrant deployment error:', error);
+    throw error;
+  }
+}
+
+// Supabase table creation
+async function createSupabaseTable(pipelineId: string): Promise<string> {
+  const url = process.env.SUPABASE_URL;
+  const serviceKey = process.env.SUPABASE_SERVICE_KEY;
+  
+  if (!url || !serviceKey) {
+    throw new Error('Supabase credentials not configured');
+  }
+
+  const tableName = `contexto_${pipelineId}`.toLowerCase().replace(/[^a-z0-9_]/g, '_');
+  
+  try {
+    // Create table using Supabase REST API
+    const createResponse = await fetch(`${url}/rest/v1/rpc/create_vector_table`, {
+      method: 'POST',
+      headers: {
+        'apikey': serviceKey,
+        'Authorization': `Bearer ${serviceKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        table_name: tableName,
+        dimension: 1536
+      })
+    });
+
+    if (!createResponse.ok && createResponse.status !== 409) { // 409 = already exists
+      const error = await createResponse.text();
+      throw new Error(`Supabase table creation failed: ${error}`);
+    }
+
+    return `${url}/rest/v1/${tableName}`;
+  } catch (error) {
+    console.error('Supabase deployment error:', error);
+    throw error;
+  }
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    // Apply rate limiting
+    const rateLimitResult = await rateLimit(request, {
+      limit: 5,
+      windowSizeInSeconds: 300 // 5 requests per 5 minutes
+    });
+
+    if (rateLimitResult.limited) {
+      return NextResponse.json(
+        { error: 'Too many deployment requests. Please wait before trying again.' },
+        { status: 429, headers: rateLimitResult.headers }
+      );
+    }
+
+    // Authenticate request
+    const authResult = await authenticateRequest(request);
+    if (!authResult.authenticated) {
+      return authResult.response || NextResponse.json({ error: 'Authentication failed' }, { status: 401 });
+    }
+
+    const userId = authResult.userId!;
+
+    // Parse and validate request body
+    const body = await request.json();
+    const validationResult = DeployVectorStoreSchema.safeParse(body);
+    
+    if (!validationResult.success) {
+      return NextResponse.json({
+        error: 'Invalid request data',
+        details: validationResult.error.issues
+      }, { status: 400 });
+    }
+
+    const { fileId, pipelineId } = validationResult.data;
+
+    // Initialize Firestore
+    const db = getFirestoreAdmin();
+
+    // Load file metadata
+    const uploadDoc = await db.collection('uploads').doc(fileId).get();
+    if (!uploadDoc.exists) {
+      return NextResponse.json({ error: 'File not found' }, { status: 404 });
+    }
+
+    const uploadData = uploadDoc.data()!;
+    if (uploadData.userId !== userId) {
+      return NextResponse.json({ error: 'Unauthorized access to file' }, { status: 403 });
+    }
+
+    // Load pipeline metadata
+    const pipelineDoc = await db.collection('pipelines').doc(pipelineId).get();
+    if (!pipelineDoc.exists) {
+      return NextResponse.json({ error: 'Pipeline not found' }, { status: 404 });
+    }
+
+    const pipelineData = pipelineDoc.data()!;
+    if (pipelineData.userId !== userId) {
+      return NextResponse.json({ error: 'Unauthorized access to pipeline' }, { status: 403 });
+    }
+
+    // Determine optimal vector store
+    const vectorStoreConfig = getVectorStore(uploadData.fileSize || 0, uploadData.purpose || '');
+    console.log(`Selected vector store: ${vectorStoreConfig.type} for pipeline ${pipelineId}`);
+
+    let vectorStoreEndpoint: string;
+    let storeType: string = vectorStoreConfig.type;
+
+    // Provision vector store based on type
+    try {
+      switch (vectorStoreConfig.type) {
+        case 'pinecone':
+          vectorStoreEndpoint = await createPineconeIndex(pipelineId);
+          break;
+        case 'qdrant':
+          vectorStoreEndpoint = await createQdrantCollection(pipelineId);
+          break;
+        case 'supabase':
+          vectorStoreEndpoint = await createSupabaseTable(pipelineId);
+          break;
+        default:
+          // Firestore fallback - no provisioning needed
+          vectorStoreEndpoint = `firestore://contexto-vectors/${userId}/${pipelineId}`;
+          storeType = 'firestore';
+      }
+    } catch (error) {
+      console.error(`Vector store deployment failed for ${vectorStoreConfig.type}:`, error);
+      
+      // Fallback to Firestore
+      vectorStoreEndpoint = `firestore://contexto-vectors/${userId}/${pipelineId}`;
+      storeType = 'firestore';
+      console.log('Falling back to Firestore vector store');
+    }
+
+    // Save deployment metadata
+    await db.collection('deployments').doc(`${userId}_${pipelineId}_vectorstore`).set({
+      userId,
+      pipelineId,
+      fileId,
+      type: 'vectorstore',
+      storeType,
+      endpoint: vectorStoreEndpoint,
+      status: 'deployed',
+      createdAt: new Date(),
+      updatedAt: new Date()
+    });
+
+    // Log deployment
+    await db.collection('usage').add({
+      userId,
+      action: 'vector_store_deployed',
+      pipelineId,
+      storeType,
+      endpoint: vectorStoreEndpoint,
+      timestamp: new Date()
+    });
+
+    return NextResponse.json({
+      vectorStoreEndpoint,
+      storeType,
+      message: `Vector store deployed successfully using ${storeType}`
+    }, { 
+      status: 200,
+      headers: rateLimitResult.headers 
+    });
+
+  } catch (error) {
+    console.error('Vector store deployment error:', error);
+    return NextResponse.json({
+      error: error instanceof Error ? error.message : 'Unknown deployment error'
+    }, { status: 500 });
+  }
+}

@@ -1,175 +1,127 @@
 'use client';
 
+// React state management hooks for dashboard functionality
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { motion } from 'framer-motion';
 import { useAuth } from '@/context/AuthContext';
-import { useToast } from '@/components/ui/toast';
-import ChatWindow from '@/components/chat/ChatWindow';
-
-// Define animations
-const fadeInVariants = {
-  hidden: { opacity: 0 },
-  visible: { opacity: 1, transition: { duration: 0.5 } },
-};
+import { db } from '@/lib/firebase';
+import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
+import ChatSidebar from '@/components/chat/ChatSidebar';
+import SimpleChatWindow from '@/components/chat/SimpleChatWindow';
+import Link from 'next/link';
+import { DocumentTextIcon, Cog6ToothIcon } from '@heroicons/react/24/outline';
 
 export default function DashboardPage() {
   const { user, isLoading: authLoading } = useAuth();
   const router = useRouter();
-  const { toast } = useToast();
+  // React useState hooks for chat state management
+  const [activeChatId, setActiveChatId] = useState<string | null>(null);
+  const [chatKey, setChatKey] = useState(0); // Force re-render of chat component
   
-  // State for loading and error handling
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  
-  // Set isLoading to false after initialization
+  // React useEffect hook for authentication state management
   useEffect(() => {
-    // Set a short timeout to ensure initial rendering is complete
-    const timer = setTimeout(() => {
-      setIsLoading(false);
-    }, 1000);
+    if (authLoading) return; // Wait for auth to load
     
-    return () => clearTimeout(timer);
-  }, []);
-  
-  // Authentication and token refresh mechanism
-  useEffect(() => {
-    // If still loading auth state, don't do anything yet
-    if (authLoading) {
-      console.log('Auth state is still loading, waiting...');
-      return;
-    }
-
-    // Once auth loading is complete, check if user exists
     if (!user) {
-      console.log('No user found after auth loaded, redirecting to signin');
+      console.log('No user found, redirecting to signin');
       router.push('/signin');
       return;
     }
     
-    // If user is authenticated, implement token refresh mechanism
-    if (user) {
-      console.log('User authenticated in dashboard, setting up token refresh');
-      
-      // Immediate token refresh on page load to ensure fresh token
-      (async () => {
-        try {
-          const token = await user.getIdToken(true);
-          console.log('Token refreshed successfully on dashboard load');
-          
-          // Store token in sessionStorage for API calls
-          sessionStorage.setItem('authToken', token);
-        } catch (error) {
-          console.error('Failed to refresh token on dashboard load:', error);
-        }
-      })();
-      
-      // Set up periodic token refresh (every 10 minutes)
-      const tokenRefreshInterval = setInterval(async () => {
-        try {
-          if (user) {
-            const token = await user.getIdToken(true);
-            console.log('Periodic token refresh successful');
-            sessionStorage.setItem('authToken', token);
-          }
-        } catch (error) {
-          console.error('Periodic token refresh failed:', error);
-        }
-      }, 10 * 60 * 1000); // 10 minutes
-      
-      return () => {
-        clearInterval(tokenRefreshInterval);
-      };
-    }
+    console.log('User authenticated, dashboard ready');
   }, [user, authLoading, router]);
-  
-  // Note: Export functionality is handled internally by the ChatWindow component
-  // This is just a reference implementation if we need to handle exports at the Dashboard level
-  const handleExportFromDashboard = async () => {
-    if (!user) {
-      setError('You must be logged in to export a pipeline');
-      return;
-    }
-    
+
+  // Create a new chat session
+  const handleNewChat = async () => {
+    if (!user?.uid) return;
+
     try {
-      // Call the export API with the user's session ID
-      const response = await fetch(`/api/exportPipeline?sessionId=${user.uid}`);
-      
-      if (!response.ok) {
-        throw new Error(`Export failed: ${response.statusText}`);
-      }
-      
-      const blob = await response.blob();
-      const url = window.URL.createObjectURL(blob);
-      
-      // Create a temporary link and trigger download
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `contexto-pipeline-${new Date().toISOString().split('T')[0]}.json`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      
-      toast({
-        title: 'Export Successful',
-        description: 'Pipeline configuration has been exported.',
-        variant: 'success',
+      const chatsRef = collection(db, 'conversations', user.uid, 'chats');
+      const newChatDoc = await addDoc(chatsRef, {
+        title: 'New Chat',
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        messageCount: 0
       });
-    } catch (err) {
-      console.error('Export error:', err);
-      setError(err instanceof Error ? err.message : 'Failed to export pipeline');
       
-      toast({
-        title: 'Export Failed',
-        description: 'Could not export pipeline configuration.',
-        variant: 'destructive',
-      });
+      setActiveChatId(newChatDoc.id);
+      setChatKey(prev => prev + 1); // Force chat component to reset
+    } catch (error) {
+      console.error('Error creating new chat:', error);
     }
   };
 
+  // Handle chat selection
+  const handleChatSelect = (chatId: string) => {
+    setActiveChatId(chatId);
+    setChatKey(prev => prev + 1); // Force chat component to reload with new chat
+  };
+  
+  // Show loading while auth is loading
+  if (authLoading) {
+    return (
+      <div className="flex items-center justify-center min-h-screen bg-white dark:bg-black">
+        <div className="animate-pulse text-gray-500 dark:text-gray-400">
+          Loading...
+        </div>
+      </div>
+    );
+  }
+  
+  // Show signin redirect if no user
+  if (!user) {
+    return (
+      <div className="flex items-center justify-center min-h-screen bg-white dark:bg-black">
+        <div className="text-gray-500 dark:text-gray-400">
+          Redirecting to sign in...
+        </div>
+      </div>
+    );
+  }
+  
+  // Render multi-chat dashboard
   return (
-    <div className="flex flex-col min-h-screen bg-gray-50 dark:bg-gray-900">
-      <motion.div
-        className="flex flex-col flex-1 w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6"
-        initial="hidden"
-        animate="visible"
-        variants={fadeInVariants}
-      >
-        {/* Main Content */}
-        <div className="flex-1 w-full">
-          {isLoading ? (
-            <div className="flex items-center justify-center h-full">
-              <div className="animate-pulse text-gray-500 dark:text-gray-400">
-                Loading...
-              </div>
-            </div>
-          ) : error ? (
-            <div className="flex flex-col items-center justify-center h-full text-center p-6">
-              <div className="text-red-500 mb-4 text-lg">
-                {error}
-              </div>
-              <button
-                onClick={() => setError(null)}
-                className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
-              >
-                Retry
-              </button>
-            </div>
-          ) : (
-            <div className="w-full h-full">
-              {/* Full-width ChatWindow */}
-              <div className="w-full h-full bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
-                <ChatWindow />
-              </div>
-            </div>
-          )}
+    <div className="flex h-screen bg-white dark:bg-black">
+      {/* Chat Sidebar */}
+      <ChatSidebar
+        activeChatId={activeChatId}
+        onChatSelect={handleChatSelect}
+        onNewChat={handleNewChat}
+      />
+      
+      {/* Main Content Area */}
+      <div className="flex-1 flex flex-col">
+        {/* Top Navigation */}
+        <div className="border-b border-gray-200 dark:border-gray-700 px-6 py-3 flex items-center justify-between bg-white dark:bg-gray-900">
+          <div className="flex items-center gap-4">
+            <h1 className="text-lg font-semibold text-gray-900 dark:text-white">
+              Contexto
+            </h1>
+            <span className="text-sm text-gray-500 dark:text-gray-400">
+              MCP Pipeline Builder
+            </span>
+          </div>
+          
+          <div className="flex items-center gap-2">
+            <Link
+              href="/files"
+              className="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white transition-colors"
+            >
+              <DocumentTextIcon className="w-4 h-4" />
+              Files
+            </Link>
+            <button className="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white transition-colors">
+              <Cog6ToothIcon className="w-4 h-4" />
+              Settings
+            </button>
+          </div>
         </div>
         
-        {/* Footer */}
-        <div className="mt-auto pt-8 text-center text-xs text-gray-500 dark:text-gray-400">
-          <p>&copy; {new Date().getFullYear()} Contexto. All rights reserved.</p>
+        {/* Chat Window */}
+        <div className="flex-1">
+          <SimpleChatWindow key={`${activeChatId}-${chatKey}`} chatId={activeChatId} />
         </div>
-      </motion.div>
+      </div>
     </div>
   );
 }

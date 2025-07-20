@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { ConversationServerService } from '@/services/conversation-server-fixed';
+import { ConversationServerService } from '@/services/conversation-server';
 import { getAuth, getFirestore, getFirebaseAdmin } from '@/lib/firebase-admin';
 // Initialize Firebase Admin SDK at the module level
 getFirebaseAdmin();

@@ -5,8 +5,7 @@ import {
   PipelineConfig,
   ConversationStepConfig 
 } from '@/types/conversation';
-import { getFirestore } from '@/lib/firebase-admin';
-import { Timestamp, FieldValue } from 'firebase-admin/firestore';
+import { Timestamp } from 'firebase-admin/firestore';
 import { getFirestoreAdmin } from '@/lib/firestore-admin';
 
 // Conversation flow configuration
@@ -357,28 +356,33 @@ export class ConversationServerService {
    * Helper function to sanitize data for Firestore
    * Removes undefined values that Firestore doesn't accept
    */
-  private static sanitizeData(obj: any): any {
+  private static sanitizeData(obj: unknown): Record<string, unknown> | unknown[] | string | number | boolean | null {
     if (obj === null || obj === undefined) {
       return null;
     }
     
     if (typeof obj !== 'object') {
-      return obj;
+      return obj as string | number | boolean;
     }
     
     if (Array.isArray(obj)) {
       return obj.map(item => this.sanitizeData(item));
     }
     
-    const result: Record<string, any> = {};
-    
-    for (const key in obj) {
-      if (obj[key] !== undefined) {
-        result[key] = this.sanitizeData(obj[key]);
+    if (obj !== null) {
+      const result: Record<string, unknown> = {};
+      
+      for (const key in obj) {
+        const typedObj = obj as Record<string, unknown>;
+        if (typedObj[key] !== undefined) {
+          result[key] = this.sanitizeData(typedObj[key]);
+        }
       }
+      
+      return result;
     }
     
-    return result;
+    return null;
   }
 
   /**
@@ -405,7 +409,7 @@ export class ConversationServerService {
    */
   private static async updateCollectedData(
     session: ConversationSession, 
-    parsedValue: any
+    parsedValue: unknown
   ): Promise<PipelineConfig> {
     const data = { ...session.collectedData };
 
@@ -414,23 +418,56 @@ export class ConversationServerService {
         data.dataSource = { 
           ...data.dataSource, 
           type: data.dataSource?.type || 'text',
-          location: parsedValue 
+          location: typeof parsedValue === 'string' ? parsedValue : String(parsedValue)
         };
         break;
       case 'chunking':
-        data.chunking = parsedValue;
+        if (typeof parsedValue === 'object' && parsedValue !== null &&
+            'size' in parsedValue && 'overlap' in parsedValue) {
+          const chunking = parsedValue as { size: number; overlap: number };
+          data.chunking = {
+            size: chunking.size,
+            overlap: chunking.overlap,
+            strategy: 'token'
+          };
+        }
         break;
       case 'embedding':
-        data.embedding = { model: parsedValue, provider: 'openai' };
+        data.embedding = { 
+          model: typeof parsedValue === 'string' ? parsedValue : 'text-embedding-ada-002', 
+          provider: 'openai' 
+        };
         break;
       case 'indexing':
-        data.indexing = { backend: parsedValue };
+        if (typeof parsedValue === 'string' && 
+            ['firestore', 'pinecone', 'weaviate', 'local'].includes(parsedValue)) {
+          data.indexing = { 
+            backend: parsedValue as 'firestore' | 'pinecone' | 'weaviate' | 'local' 
+          };
+        }
         break;
       case 'retrieval':
-        data.retrieval = parsedValue;
+        if (typeof parsedValue === 'object' && parsedValue !== null &&
+            'topK' in parsedValue && 'searchType' in parsedValue) {
+          const retrieval = parsedValue as { 
+            topK: number; 
+            searchType: 'semantic' | 'hybrid' | 'keyword';
+            threshold?: number;
+          };
+          data.retrieval = retrieval;
+        }
         break;
       case 'rag_config':
-        data.rag = parsedValue;
+        if (typeof parsedValue === 'object' && parsedValue !== null &&
+            'model' in parsedValue) {
+          const rag = parsedValue as {
+            model: string;
+            temperature?: number;
+            maxTokens?: number;
+            promptTemplate?: string;
+          };
+          data.rag = rag;
+        }
         break;
     }
 
