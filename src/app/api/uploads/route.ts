@@ -2,9 +2,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getFirestore } from '@/lib/firebase-admin';
 import { rateLimit } from '@/lib/rate-limiter-memory';
 import { authenticateRequest } from '@/lib/api-auth';
+import * as admin from 'firebase-admin';
 
-// Initialize Firebase Admin services
-const db = getFirestore();
+// Firebase Admin services will be initialized inside the request handler
 
 export async function GET(request: NextRequest) {
   try {
@@ -34,6 +34,9 @@ export async function GET(request: NextRequest) {
     const userId = auth.userId;
 
     try {
+      // Initialize Firestore inside the handler to properly await it
+      const db = await getFirestore();
+      
       // Verify database connection first
       if (!db) {
         throw new Error('Database connection unavailable');
@@ -50,7 +53,7 @@ export async function GET(request: NextRequest) {
       const query = uploadsRef.where('userId', '==', userId).orderBy('uploadedAt', 'desc');
       const snapshot = await query.get();
 
-      const uploads = snapshot.docs.map(doc => {
+      const uploads = snapshot.docs.map((doc: admin.firestore.QueryDocumentSnapshot) => {
         const data = doc.data();
         return {
           fileId: doc.id,

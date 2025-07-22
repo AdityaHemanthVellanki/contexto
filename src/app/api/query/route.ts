@@ -6,7 +6,7 @@ import { findSimilarChunks } from '@/lib/embeddings';
 import { rateLimit } from '@/lib/rate-limiter-memory';
 
 // Initialize Firebase Admin services
-const db = getFirestore();
+// Note: We need to get the Firestore instance inside the request handler to properly await it
 
 // Azure OpenAI configuration
 const azureApiKey = process.env.AZURE_OPENAI_API_KEY || '';
@@ -14,6 +14,9 @@ const azureEndpoint = process.env.AZURE_OPENAI_ENDPOINT || '';
 
 export async function POST(request: NextRequest) {
   try {
+    // Initialize Firestore inside the handler to properly await it
+    const db = await getFirestore();
+    
     // Apply rate limiting first
     const rateLimitResult = await rateLimit(request, {
       // Allow more requests for query endpoint compared to uploads

@@ -298,27 +298,42 @@ async function processXLSX(buffer: Buffer): Promise<string> {
 
 /**
  * Process images using Tesseract OCR
+ * Modified to work in both browser and Node.js environments
  */
 async function processImage(buffer: Buffer): Promise<string> {
   try {
+    // Check if we're in a Node.js environment
+    const isNode = typeof window === 'undefined';
+    console.log(`Processing image in ${isNode ? 'Node.js' : 'browser'} environment`);
+    
+    // Import Tesseract with environment-specific configuration
     const Tesseract = await import('tesseract.js');
-    const path = await import('path');
-    const { data: { text } } = await Tesseract.recognize(buffer, 'eng', {
-      logger: (m: unknown) => console.log(m),
-      workerPath: path.join(process.cwd(), 'node_modules', 'tesseract.js', 'dist', 'worker.min.js'),
-      corePath: path.join(process.cwd(), 'node_modules', 'tesseract.js-core', 'tesseract-core.wasm.js')
-    });
-    return text;
-  } catch (error) {
-    // Fall back to a simpler approach if the first attempt fails
-    try {
-      console.log('First OCR attempt failed, trying fallback approach...');
-      const Tesseract = await import('tesseract.js');
+    
+    // For Node.js environment, use a simpler configuration without browser-specific features
+    if (isNode) {
+      // Use a safer approach for Node.js that doesn't rely on browser APIs
+      console.log('Using Node.js compatible OCR approach');
+      // Use the standard recognize function with minimal options
+      const result = await Tesseract.default.recognize(buffer, 'eng', {
+        logger: (m: unknown) => console.log('Tesseract progress:', m)
+      });
+      return result.data.text;
+    } else {
+      // Browser environment can use the standard recognize function
       const { data: { text } } = await Tesseract.recognize(buffer, 'eng');
       return text;
+    }
+  } catch (error) {
+    console.error('OCR processing error:', error);
+    
+    // Fall back to a basic extraction approach
+    try {
+      console.log('OCR failed, using basic extraction fallback...');
+      // Return a placeholder message when OCR fails completely
+      return '[Image content could not be extracted. Please try a different file format or manually transcribe the image.]';
     } catch (fallbackError) {
-      console.error('OCR fallback failed:', fallbackError);
-      throw new Error(`Image OCR failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      console.error('Fallback extraction also failed:', fallbackError);
+      throw new Error(`Image OCR failed: ${error instanceof Error ? (error as Error).message : 'Unknown error'}`);
     }
   }
 }

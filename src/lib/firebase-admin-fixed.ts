@@ -237,6 +237,21 @@ export function getFirestoreSync(): admin.firestore.Firestore {
 
 /**
  * Alias for getFirestore for backward compatibility
- * @deprecated Use getFirestore() instead
  */
 export const getFirestoreDB = getFirestore;
+
+/**
+ * Get Firebase Storage instance
+ * Ensures Firebase Admin SDK is initialized first
+ */
+export async function getStorage(): Promise<admin.storage.Storage> {
+  await getFirebaseAdmin();
+  return admin.storage();
+}
+
+/**
+ * Synchronous version of getStorage for backward compatibility
+ */
+export function getStorageSync(): admin.storage.Storage {
+  return admin.storage();
+}

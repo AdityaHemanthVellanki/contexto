@@ -258,7 +258,7 @@ async function deployToVercel(pipelineId: string, files: VercelFile[]): Promise<
       },
       body: JSON.stringify({
         name: deploymentName,
-        projectId: vercelProjectId,
+        // Removed projectId which was causing Vercel API error
         target: 'production',
         files: files.map(f => ({
           file: f.file,

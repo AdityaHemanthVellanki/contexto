@@ -5,7 +5,7 @@ import { db } from '@/lib/firebase';
 import { doc, getDoc, collection, addDoc, serverTimestamp } from 'firebase/firestore';
 // Import the correct OpenAI client for Azure
 import { OpenAI } from 'openai';
-import { getFirebaseAdmin } from '@/lib/firebase-admin';
+import { getFirestore } from '@/lib/firebase-admin';
 import { modelMapping } from '@/lib/azureOpenAI';
 
 interface RequestBody {
@@ -54,7 +54,7 @@ async function generateOpenAIResponse(prompt: string, userId: string): Promise<s
   });
   
   // Record the usage to Firestore for monitoring and billing
-  const adminDb = getFirebaseAdmin().firestore();
+  const adminDb = await getFirestore();
   await adminDb.collection('usage').add({
     userId,
     timestamp: new Date(),

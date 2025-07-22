@@ -5,7 +5,15 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '@/hooks/useAuth';
 import { getAuth } from 'firebase/auth';
 import { app } from '@/lib/firebase';
-import { Upload, Download, Loader2, Rocket } from 'lucide-react';
+import { Upload, Download, Loader2, Rocket, ChevronDown, AlertCircle } from 'lucide-react';
+
+interface UploadedFile {
+  fileId: string;
+  fileName: string;
+  fileType: string;
+  uploadedAt: Date;
+  status: string;
+}
 
 interface Message {
   id: string;
@@ -57,8 +65,14 @@ export default function SimpleChatWindow({ chatId }: SimpleChatWindowProps) {
   const [currentPipelineId, setCurrentPipelineId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isDeploying, setIsDeploying] = useState(false);
+  const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
+  const [isLoadingFiles, setIsLoadingFiles] = useState(false);
+  const [fileError, setFileError] = useState<string | null>(null);
+  const [selectedFileId, setSelectedFileId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
 
   useEffect(() => {
     // Load messages for the current chat from Firestore or show welcome message
@@ -81,6 +95,77 @@ export default function SimpleChatWindow({ chatId }: SimpleChatWindowProps) {
       }]);
     }
   }, [chatId, user?.uid, messages.length]);
+  
+  // Fetch user's previously uploaded files
+  useEffect(() => {
+    const fetchUploadedFiles = async () => {
+      if (!user) return;
+      
+      try {
+        setIsLoadingFiles(true);
+        setFileError(null);
+        
+        const auth = getAuth(app);
+        const firebaseUser = auth.currentUser;
+        if (!firebaseUser) throw new Error('No authenticated user found');
+        const token = await firebaseUser.getIdToken();
+        
+        const response = await fetch('/api/uploads', {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${token}`
+          }
+        });
+        
+        if (!response.ok) {
+          if (response.status === 401) {
+            throw new Error('Session expired, please sign in again.');
+          }
+          throw new Error('Could not load your files. Please try again.');
+        }
+        
+        const data = await response.json();
+        
+        if (data.uploads && Array.isArray(data.uploads)) {
+          // Convert uploadedAt string to Date object
+          const files = data.uploads.map((file: any) => ({
+            ...file,
+            uploadedAt: file.uploadedAt ? new Date(file.uploadedAt) : new Date()
+          }));
+          
+          // Sort by uploadedAt descending
+          files.sort((a: UploadedFile, b: UploadedFile) => 
+            b.uploadedAt.getTime() - a.uploadedAt.getTime()
+          );
+          
+          setUploadedFiles(files);
+        }
+      } catch (error) {
+        console.error('Error fetching uploaded files:', error);
+        setFileError(
+          error instanceof Error 
+            ? error.message 
+            : 'Could not load your files. Please try again.'
+        );
+      } finally {
+        setIsLoadingFiles(false);
+      }
+    };
+    
+    fetchUploadedFiles();
+  }, [user]);
+  
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setIsDropdownOpen(false);
+      }
+    };
+    
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -97,6 +182,25 @@ export default function SimpleChatWindow({ chatId }: SimpleChatWindowProps) {
     setMessages(prev => [...prev, newMessage]);
   };
 
+  const selectExistingFile = (fileId: string, fileName: string) => {
+    if (!fileId || !user) return;
+    
+    setSelectedFileId(fileId);
+    setCurrentFileId(fileId);
+    setIsDropdownOpen(false);
+    
+    // Add user message showing file selection
+    addMessage('user', `Using existing file: ${fileName}`);
+    
+    // Move to purpose input state
+    setChatState('purpose-input');
+    
+    // Add AI response asking for purpose
+    setTimeout(() => {
+      addMessage('ai', '✅ File selected! Now please describe what kind of MCP pipeline you need—what problem are you solving or what insight you want?');
+    }, 500);
+  };
+  
   const handleFileUpload = async (file: File) => {
     if (!user) return;
 
@@ -134,6 +238,18 @@ export default function SimpleChatWindow({ chatId }: SimpleChatWindowProps) {
 
       const { fileId } = await response.json();
       setCurrentFileId(fileId);
+
+      // Add the newly uploaded file to the uploadedFiles list
+      const newFile: UploadedFile = {
+        fileId,
+        fileName: file.name,
+        fileType: file.type,
+        uploadedAt: new Date(),
+        status: 'ready'
+      };
+      
+      setUploadedFiles(prevFiles => [newFile, ...prevFiles]);
+      setSelectedFileId(fileId);
 
       // Move to purpose input state
       setChatState('purpose-input');
@@ -385,19 +501,72 @@ export default function SimpleChatWindow({ chatId }: SimpleChatWindowProps) {
       {/* Input Area */}
       <div className="border-t border-gray-200 dark:border-gray-800 p-4">
         {chatState === 'welcome' || chatState === 'file-upload' ? (
-          <div className="flex justify-center">
-            <button
-              onClick={handleFileSelect}
-              disabled={isLoading}
-              className="inline-flex items-center gap-3 px-6 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white rounded-lg font-medium transition-colors"
-            >
-              {isLoading ? (
-                <Loader2 className="animate-spin" size={20} />
-              ) : (
-                <Upload size={20} />
-              )}
-              {isLoading ? 'Uploading...' : 'Upload File'}
-            </button>
+          <div className="flex flex-col justify-center items-center space-y-4">
+            <div className="flex space-x-4">
+              {/* Select Existing File Dropdown */}
+              <div className="relative" ref={dropdownRef}>
+                <button
+                  onClick={() => setIsDropdownOpen(!isDropdownOpen)}
+                  disabled={isLoading || isLoadingFiles || uploadedFiles.length === 0}
+                  aria-expanded={isDropdownOpen}
+                  aria-haspopup="listbox"
+                  aria-label="Select an existing file"
+                  className={`inline-flex items-center justify-between gap-2 px-4 py-3 min-w-[220px] border rounded-lg font-medium transition-colors ${isLoading || isLoadingFiles || uploadedFiles.length === 0 ? 'bg-gray-100 border-gray-300 text-gray-400 cursor-not-allowed dark:bg-gray-800 dark:border-gray-700 dark:text-gray-500' : 'bg-white border-gray-300 text-gray-800 hover:border-blue-500 dark:bg-gray-800 dark:border-gray-700 dark:text-gray-200 dark:hover:border-blue-500'}`}
+                >
+                  <span className="truncate">
+                    {isLoadingFiles ? 'Loading files...' : 
+                     uploadedFiles.length === 0 ? 'No files uploaded yet' : 
+                     selectedFileId ? uploadedFiles.find(f => f.fileId === selectedFileId)?.fileName : 
+                     '– Select a previously uploaded file –'}
+                  </span>
+                  <ChevronDown size={16} className={`transition-transform ${isDropdownOpen ? 'rotate-180' : ''}`} />
+                </button>
+                
+                {isDropdownOpen && uploadedFiles.length > 0 && (
+                  <div className="absolute z-10 mt-1 w-full max-h-60 overflow-auto rounded-lg border border-gray-300 bg-white shadow-lg dark:bg-gray-800 dark:border-gray-700">
+                    <ul role="listbox" className="py-1">
+                      {uploadedFiles.map(file => (
+                        <li 
+                          key={file.fileId}
+                          role="option"
+                          aria-selected={selectedFileId === file.fileId}
+                          onClick={() => selectExistingFile(file.fileId, file.fileName)}
+                          className={`px-4 py-2 cursor-pointer text-sm hover:bg-blue-100 dark:hover:bg-blue-900/30 ${selectedFileId === file.fileId ? 'bg-blue-50 text-blue-600 dark:bg-blue-900/20 dark:text-blue-400' : 'text-gray-800 dark:text-gray-200'}`}
+                        >
+                          <div className="truncate font-medium">{file.fileName}</div>
+                          <div className="text-xs text-gray-500 dark:text-gray-400">
+                            {new Date(file.uploadedAt).toLocaleDateString()} {new Date(file.uploadedAt).toLocaleTimeString()}
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+              
+              {/* Upload New File Button */}
+              <button
+                onClick={handleFileSelect}
+                disabled={isLoading}
+                aria-label="Upload a new file"
+                className="inline-flex items-center gap-3 px-6 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white rounded-lg font-medium transition-colors"
+              >
+                {isLoading ? (
+                  <Loader2 className="animate-spin" size={20} />
+                ) : (
+                  <Upload size={20} />
+                )}
+                {isLoading ? 'Uploading...' : 'Upload New File'}
+              </button>
+            </div>
+            
+            {/* File Error Message */}
+            {fileError && (
+              <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400">
+                <AlertCircle size={16} />
+                <span>{fileError}</span>
+              </div>
+            )}
             
             <input
               ref={fileInputRef}

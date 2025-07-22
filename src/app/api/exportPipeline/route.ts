@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getFirestoreDB } from '@/lib/firebase-admin';
+import { getFirestore } from '@/lib/firebase-admin';
 import { authenticateRequest } from '@/lib/api-auth';
 
 // Initialize Firestore
-const getDb = async () => await getFirestoreDB();
+const getDb = async () => await getFirestore();
 
 export async function POST(request: NextRequest) {
   try {

@@ -1,8 +1,30 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { ConversationServerService } from '@/services/conversation-server';
-import { getAuth, getFirestore, getFirebaseAdmin } from '@/lib/firebase-admin';
-// Initialize Firebase Admin SDK at the module level
-getFirebaseAdmin();
+import { getAuth } from '@/lib/firebase-admin';
+import { getFirestoreAdmin } from '@/lib/firestore-admin';
+
+// Ensure Firebase is properly initialized before handling requests
+// This is done outside the request handlers to avoid initialization on every request
+let initPromise: Promise<void> | null = null;
+
+// Initialize Firebase Admin SDK with proper error handling
+async function ensureFirebaseInitialized() {
+  if (!initPromise) {
+    initPromise = (async () => {
+      try {
+        // Initialize Firebase and Firestore with proper settings
+        await getFirestoreAdmin();
+        console.log('✅ Firebase initialized successfully for conversation API');
+      } catch (error) {
+        console.error('❌ Firebase initialization failed in conversation API:', error);
+        // Reset the promise so we can try again on the next request
+        initPromise = null;
+        throw error;
+      }
+    })();
+  }
+  return initPromise;
+}
 
 // Define a type for Firebase errors
 type FirebaseError = {
@@ -31,7 +53,7 @@ function logDetailedError(error: unknown, context: string) {
 // Helper function to verify Firestore connection
 async function verifyFirestoreConnection() {
   try {
-    const db = getFirestore();
+    const db = await getFirestoreAdmin();
     // Try a simple operation to verify connection
     const testDoc = await db.collection('_connection_test').doc('test').get();
     return { connected: true };
@@ -43,6 +65,9 @@ async function verifyFirestoreConnection() {
 
 export async function POST(request: NextRequest) {
   try {
+    // Ensure Firebase is initialized before processing the request
+    await ensureFirebaseInitialized();
+    
     // Verify authentication
     const authHeader = request.headers.get('authorization');
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -63,7 +88,9 @@ export async function POST(request: NextRequest) {
     // Verify the Firebase ID token
     let decodedToken;
     try {
-      decodedToken = await getAuth().verifyIdToken(token);
+      // First get the Auth instance, then verify the token
+      const auth = await getAuth();
+      decodedToken = await auth.verifyIdToken(token);
     } catch (error) {
       logDetailedError(error, 'token verification');
       return NextResponse.json({ 
@@ -177,6 +204,9 @@ export async function POST(request: NextRequest) {
 
 export async function GET(request: NextRequest) {
   try {
+    // Ensure Firebase is initialized before processing the request
+    await ensureFirebaseInitialized();
+    
     // Verify authentication
     const authHeader = request.headers.get('authorization');
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -188,7 +218,9 @@ export async function GET(request: NextRequest) {
     // Verify the Firebase ID token
     let decodedToken;
     try {
-      decodedToken = await getAuth().verifyIdToken(token);
+      // First get the Auth instance, then verify the token
+      const auth = await getAuth();
+      decodedToken = await auth.verifyIdToken(token);
     } catch (error: unknown) {
       logDetailedError(error, 'GET token verification');
       return NextResponse.json({ 
