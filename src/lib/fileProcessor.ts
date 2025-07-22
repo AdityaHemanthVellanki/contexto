@@ -302,12 +302,24 @@ async function processXLSX(buffer: Buffer): Promise<string> {
 async function processImage(buffer: Buffer): Promise<string> {
   try {
     const Tesseract = await import('tesseract.js');
+    const path = await import('path');
     const { data: { text } } = await Tesseract.recognize(buffer, 'eng', {
-      logger: (m: unknown) => console.log(m)
+      logger: (m: unknown) => console.log(m),
+      workerPath: path.join(process.cwd(), 'node_modules', 'tesseract.js', 'dist', 'worker.min.js'),
+      corePath: path.join(process.cwd(), 'node_modules', 'tesseract.js-core', 'tesseract-core.wasm.js')
     });
     return text;
   } catch (error) {
-    throw new Error(`Image OCR failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    // Fall back to a simpler approach if the first attempt fails
+    try {
+      console.log('First OCR attempt failed, trying fallback approach...');
+      const Tesseract = await import('tesseract.js');
+      const { data: { text } } = await Tesseract.recognize(buffer, 'eng');
+      return text;
+    } catch (fallbackError) {
+      console.error('OCR fallback failed:', fallbackError);
+      throw new Error(`Image OCR failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
   }
 }
 

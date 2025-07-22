@@ -1,0 +1,17 @@
+QA Test Document - Plain Text Format
+
+This is a comprehensive test document for validating text extraction accuracy.
+
+Key Test Phrases:
+- "UNIQUE_IDENTIFIER_12345" - This phrase should be extracted exactly
+- Numbers: 42, 3.14159, -17
+- Special characters: @#$%^&*()
+- Unicode: café, naïve, résumé
+
+Content Sections:
+1. Introduction: This document tests plain text processing
+2. Data validation: Row 5, Column 2 contains value "TEST_VALUE_789"
+3. Code snippet: function testFunction() { return "success"; }
+
+Expected chunk count: approximately 1-2 chunks
+Expected extraction: 100% accuracy for UTF-8 text

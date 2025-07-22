@@ -1,0 +1,34 @@
+{
+  "timestamp": "2025-07-22T09:54:29.692Z",
+  "phase": "Phase 2: API Endpoints & Authentication",
+  "summary": {
+    "total": 18,
+    "passed": 0,
+    "failed": 18,
+    "successRate": "0.0%"
+  },
+  "errors": [
+    "Server health: ",
+    "Auth test: ",
+    "/api/health: ",
+    "/api/upload: ",
+    "/api/processPipeline: ",
+    "/api/exportPipeline: ",
+    "/api/deployVectorStore: ",
+    "/api/deployServer: ",
+    "/api/generatePipeline: ",
+    "Upload test-document.txt: ",
+    "Upload test-data.csv: ",
+    "Upload test-config.json: ",
+    "Upload test-page.html: ",
+    "Upload test-document.md: ",
+    "Processing: ",
+    "Export: ",
+    "Deploy vector store: ",
+    "Deploy server: "
+  ],
+  "details": [],
+  "recommendations": [
+    "Fix the errors listed above before proceeding to authenticated testing"
+  ]
+}

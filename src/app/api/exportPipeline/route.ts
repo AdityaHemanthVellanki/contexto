@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getFirestore } from '@/lib/firebase-admin';
+import { getFirestoreDB } from '@/lib/firebase-admin';
 import { authenticateRequest } from '@/lib/api-auth';
 
 // Initialize Firestore
-const db = getFirestore();
+const getDb = async () => await getFirestoreDB();
 
 export async function POST(request: NextRequest) {
   try {
@@ -31,6 +31,7 @@ export async function POST(request: NextRequest) {
     
     // Fetch the pipeline from Firestore using Admin SDK
     try {
+      const db = await getDb();
       const pipelineRef = db.collection('pipelines').doc(pipelineId);
       const pipelineDoc = await pipelineRef.get();
       

@@ -1,0 +1,40 @@
+{
+  "test_metadata": {
+    "format": "JSON",
+    "unique_identifier": "JSON_TEST_ID_99999",
+    "version": "1.0.0"
+  },
+  "test_data": {
+    "string_value": "JSON extraction test string",
+    "number_value": 42,
+    "float_value": 3.14159,
+    "boolean_value": true,
+    "null_value": null
+  },
+  "nested_object": {
+    "level_1": {
+      "level_2": {
+        "deep_value": "NESTED_JSON_VALUE_123",
+        "array_data": [
+          "item1",
+          "item2", 
+          "JSON_ARRAY_ITEM_456"
+        ]
+      }
+    }
+  },
+  "test_questions": [
+    {
+      "question": "What is the unique_identifier value?",
+      "expected_answer": "JSON_TEST_ID_99999"
+    },
+    {
+      "question": "What is the deep_value in the nested object?",
+      "expected_answer": "NESTED_JSON_VALUE_123"
+    },
+    {
+      "question": "What is the third item in the array_data?",
+      "expected_answer": "JSON_ARRAY_ITEM_456"
+    }
+  ]
+}

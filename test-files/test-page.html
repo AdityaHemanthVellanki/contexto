@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QA Test HTML Document</title>
+</head>
+<body>
+    <h1>HTML Extraction Test Page</h1>
+    <p>This is a <strong>comprehensive test document</strong> for validating HTML extraction accuracy.</p>
+    
+    <h2>Key Test Phrases:</h2>
+    <ul>
+        <li><code>HTML_UNIQUE_ID_54321</code> - This phrase should be extracted exactly</li>
+        <li>Numbers: 42, 3.14159, -17</li>
+        <li><em>Italic text</em> and <strong>bold text</strong></li>
+        <li><a href="https://example.com">Link text</a></li>
+    </ul>
+    
+    <h3>Content Sections:</h3>
+    <ol>
+        <li><strong>Introduction</strong>: This document tests HTML processing</li>
+        <li><strong>Data validation</strong>: Row 5, Column 2 contains value <span id="test-value">HTML_TEST_VALUE_789</span></li>
+        <li><strong>Code snippet</strong>:</li>
+    </ol>
+    
+    <pre><code>
+function testHTMLFunction() { 
+    return "html_success"; 
+}
+    </code></pre>
+    
+    <blockquote>
+        <p>This blockquote should be extracted with proper formatting: <strong>HTML_BLOCKQUOTE_TEST_999</strong></p>
+    </blockquote>
+    
+    <table>
+        <thead>
+            <tr>
+                <th>Column 1</th>
+                <th>Column 2</th>
+                <th>Column 3</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>Value A</td>
+                <td>Value B</td>
+                <td>Value C</td>
+            </tr>
+            <tr>
+                <td>Test 1</td>
+                <td>HTML_TABLE_TEST_456</td>
+                <td>Test 3</td>
+            </tr>
+        </tbody>
+    </table>
+    
+    <p><strong>Expected chunk count</strong>: approximately 2-3 chunks</p>
+    <p><strong>Expected extraction</strong>: 100% accuracy for HTML text with tags stripped and content preserved</p>
+</body>
+</html>

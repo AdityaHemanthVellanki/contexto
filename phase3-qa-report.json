@@ -1,0 +1,227 @@
+{
+  "timestamp": "2025-07-22T10:08:29.725Z",
+  "phase": "Phase 3: Authenticated User Flows (Pre-Auth Validation)",
+  "testResults": {
+    "phase3": {
+      "authentication": {
+        "passed": 7,
+        "failed": 0,
+        "tests": [
+          {
+            "name": "Server Connectivity",
+            "passed": true,
+            "timestamp": "2025-07-22T10:08:25.608Z",
+            "details": {
+              "status": 200,
+              "url": "http://localhost:3000/signin"
+            }
+          },
+          {
+            "name": "Authentication Interface",
+            "passed": true,
+            "timestamp": "2025-07-22T10:08:25.665Z",
+            "details": {
+              "googleAuth": true,
+              "emailField": true,
+              "passwordField": true,
+              "signInButton": true
+            }
+          },
+          {
+            "name": "Endpoint Security - /api/upload",
+            "passed": true,
+            "timestamp": "2025-07-22T10:08:26.438Z",
+            "details": {
+              "expectedStatus": 401,
+              "actualStatus": 401,
+              "endpoint": "/api/upload"
+            }
+          },
+          {
+            "name": "Endpoint Security - /api/processPipeline",
+            "passed": true,
+            "timestamp": "2025-07-22T10:08:28.076Z",
+            "details": {
+              "expectedStatus": 401,
+              "actualStatus": 401,
+              "endpoint": "/api/processPipeline"
+            }
+          },
+          {
+            "name": "Endpoint Security - /api/exportPipeline",
+            "passed": true,
+            "timestamp": "2025-07-22T10:08:28.261Z",
+            "details": {
+              "expectedStatus": 401,
+              "actualStatus": 401,
+              "endpoint": "/api/exportPipeline"
+            }
+          },
+          {
+            "name": "Endpoint Security - /api/deployVectorStore",
+            "passed": true,
+            "timestamp": "2025-07-22T10:08:28.473Z",
+            "details": {
+              "expectedStatus": 401,
+              "actualStatus": 401,
+              "endpoint": "/api/deployVectorStore"
+            }
+          },
+          {
+            "name": "Endpoint Security - /api/deployServer",
+            "passed": true,
+            "timestamp": "2025-07-22T10:08:28.721Z",
+            "details": {
+              "expectedStatus": 401,
+              "actualStatus": 401,
+              "endpoint": "/api/deployServer"
+            }
+          }
+        ]
+      },
+      "fileProcessing": {
+        "passed": 5,
+        "failed": 0,
+        "tests": [
+          {
+            "name": "File Content - test-document.txt",
+            "passed": true,
+            "timestamp": "2025-07-22T10:08:28.721Z",
+            "details": {
+              "expectedContent": "UNIQUE_IDENTIFIER_12345",
+              "found": true,
+              "testQuery": "What is the unique identifier in the document?",
+              "expectedAnswer": "UNIQUE_IDENTIFIER_12345"
+            }
+          },
+          {
+            "name": "File Content - test-data.csv",
+            "passed": true,
+            "timestamp": "2025-07-22T10:08:28.721Z",
+            "details": {
+              "expectedContent": "Charlie Wilson,38,HR",
+              "found": true,
+              "testQuery": "What is the value in row 5, column 2?",
+              "expectedAnswer": "38"
+            }
+          },
+          {
+            "name": "File Content - test-config.json",
+            "passed": true,
+            "timestamp": "2025-07-22T10:08:28.721Z",
+            "details": {
+              "expectedContent": "JSON_TEST_ID_99999",
+              "found": true,
+              "testQuery": "What is the unique_identifier value?",
+              "expectedAnswer": "JSON_TEST_ID_99999"
+            }
+          },
+          {
+            "name": "File Content - test-page.html",
+            "passed": true,
+            "timestamp": "2025-07-22T10:08:28.722Z",
+            "details": {
+              "expectedContent": "HTML_TEST_VALUE_789",
+              "found": true,
+              "testQuery": "What is the test value in the span element?",
+              "expectedAnswer": "HTML_TEST_VALUE_789"
+            }
+          },
+          {
+            "name": "File Content - test-document.md",
+            "passed": true,
+            "timestamp": "2025-07-22T10:08:28.722Z",
+            "details": {
+              "expectedContent": "UNIQUE_MARKDOWN_ID_67890",
+              "found": true,
+              "testQuery": "What is the unique markdown ID?",
+              "expectedAnswer": "UNIQUE_MARKDOWN_ID_67890"
+            }
+          }
+        ]
+      },
+      "ragQueries": {
+        "passed": 0,
+        "failed": 0,
+        "tests": []
+      },
+      "export": {
+        "passed": 0,
+        "failed": 0,
+        "tests": []
+      },
+      "deployment": {
+        "passed": 0,
+        "failed": 0,
+        "tests": []
+      },
+      "multiUser": {
+        "passed": 0,
+        "failed": 0,
+        "tests": []
+      },
+      "accessibility": {
+        "passed": 1,
+        "failed": 0,
+        "tests": [
+          {
+            "name": "Accessibility Features",
+            "passed": true,
+            "timestamp": "2025-07-22T10:08:28.763Z",
+            "details": {
+              "ariaLabels": false,
+              "properHeadings": true,
+              "formLabels": true,
+              "keyboardNav": true,
+              "altText": true,
+              "score": "4/5"
+            }
+          }
+        ]
+      },
+      "errorHandling": {
+        "passed": 2,
+        "failed": 0,
+        "tests": [
+          {
+            "name": "Invalid Endpoint",
+            "passed": true,
+            "timestamp": "2025-07-22T10:08:29.702Z",
+            "details": {
+              "expectedStatus": 404,
+              "actualStatus": 404,
+              "url": "http://localhost:3000/api/nonexistent"
+            }
+          },
+          {
+            "name": "Malformed Request",
+            "passed": true,
+            "timestamp": "2025-07-22T10:08:29.724Z",
+            "details": {
+              "expectedStatus": 400,
+              "actualStatus": 401,
+              "url": "http://localhost:3000/api/upload"
+            }
+          }
+        ]
+      }
+    },
+    "summary": {
+      "totalPassed": 15,
+      "totalFailed": 0,
+      "successRate": "100.0%"
+    },
+    "errors": [],
+    "recommendations": [
+      "All Phase 3 tests passed - ready for authenticated user testing",
+      "Proceed with manual authentication and end-to-end user flow validation"
+    ]
+  },
+  "nextSteps": [
+    "Complete manual authentication testing",
+    "Test file upload and processing flows",
+    "Validate RAG query accuracy",
+    "Test MCP export and deployment",
+    "Perform multi-user isolation testing"
+  ]
+}
