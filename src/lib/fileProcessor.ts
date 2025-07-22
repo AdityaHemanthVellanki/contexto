@@ -96,14 +96,102 @@ export async function processFile(
 }
 
 /**
- * Process PDF files using pdf-parse
+ * Process PDF files using pdf-parse with custom handling to avoid test file references
  */
 async function processPDF(buffer: Buffer): Promise<string> {
+  // Track the original working directory so we can restore it later
+  let originalCwd = process.cwd();
+  let tempDir = '';
+  
   try {
-    const pdfParse = await import('pdf-parse');
-    const data = await pdfParse.default(buffer);
-    return data.text;
+    console.log(`Processing PDF with buffer size: ${buffer.byteLength} bytes`);
+    
+    // Create a temporary directory to isolate pdf-parse from its default test paths
+    const fs = await import('fs/promises');
+    const path = await import('path');
+    const os = await import('os');
+    const crypto = await import('crypto');
+    
+    // Create a unique temporary directory with randomness to avoid collisions
+    const randomId = crypto.randomBytes(8).toString('hex');
+    tempDir = path.join(os.tmpdir(), `pdf-extract-${randomId}-${Date.now()}`);
+    
+    try {
+      // Ensure the directory exists
+      await fs.mkdir(tempDir, { recursive: true });
+      console.log(`Created temporary directory for PDF processing: ${tempDir}`);
+      
+      // We'll create our own test file and modify the process working directory temporarily
+      const originalCwd = process.cwd();
+      const testDirPath = path.join(tempDir, 'test', 'data');
+      await fs.mkdir(testDirPath, { recursive: true });
+      
+      // Create the exact file that pdf-parse is looking for
+      const minimalPdfPath = path.join(testDirPath, '05-versions-space.pdf');
+      await fs.writeFile(minimalPdfPath, buffer);
+      
+      // Temporarily change working directory to use our test directory
+      process.chdir(tempDir);
+      
+      // Process using direct approach
+      try {
+        const pdfParse = await import('pdf-parse');
+        
+        // First attempt - with direct options
+        const options = {
+          max: 0, // No page limit
+          version: 'default',
+          // Use the file we just created
+          file: minimalPdfPath
+        };
+        
+        console.log('Attempting PDF parsing with direct file reference');
+        const result = await pdfParse.default(buffer, options);
+        
+        if (result && result.text) {
+          console.log(`Successfully extracted ${result.text.length} characters from PDF`);
+          return result.text;
+        } else {
+          console.warn('PDF parsed but no text content was extracted');
+          return '';
+        }
+      } catch (primaryError) {
+        console.error('Primary PDF parsing attempt failed:', primaryError);
+        
+        // Second attempt - fallback approach
+        try {
+          // Try parsing again with a simpler approach
+          const pdfParse = await import('pdf-parse');
+          const result = await pdfParse.default(buffer, { version: 'default' });
+          
+          if (result && result.text) {
+            console.log(`Fallback PDF extraction succeeded with ${result.text.length} characters`);
+            return result.text;
+          } else {
+            return '';
+          }
+        } catch (fallbackError) {
+          console.error('Fallback PDF parsing also failed:', fallbackError);
+          throw new Error('Multiple PDF parsing methods failed');
+        }
+      }
+    } finally {
+      // Restore original working directory if it was changed
+      if (originalCwd) {
+        process.chdir(originalCwd);
+        console.log('Restored original working directory');
+      }
+      
+      // Always clean up the temporary directory
+      try {
+        await fs.rm(tempDir, { recursive: true, force: true });
+        console.log(`Cleaned up temporary directory: ${tempDir}`);
+      } catch (cleanupError) {
+        console.warn(`Failed to clean up temporary directory: ${cleanupError instanceof Error ? cleanupError.message : 'Unknown error'}`);
+      }
+    }
   } catch (error) {
+    console.error('PDF processing failed completely:', error);
     throw new Error(`PDF processing failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
 }
@@ -122,14 +210,67 @@ async function processDOCX(buffer: Buffer): Promise<string> {
 }
 
 /**
- * Process PPTX files using pptx-parser
+ * Process PPTX files using pptxgenjs and JSZip
  */
 async function processPPTX(buffer: Buffer): Promise<string> {
   try {
-    // For now, return a placeholder - PPTX parsing is complex
-    // In production, you'd use a library like 'pptx-parser' or similar
-    return 'PPTX content extraction not yet implemented. Please convert to PDF or text format.';
+    const JSZip = (await import('jszip')).default;
+    const zip = new JSZip();
+    
+    // Load the PPTX file as a zip archive
+    const pptxZip = await zip.loadAsync(buffer);
+    
+    // PPTX files contain slide content in ppt/slides/slide*.xml files
+    const slideFiles = Object.keys(pptxZip.files).filter(fileName => 
+      fileName.startsWith('ppt/slides/slide') && fileName.endsWith('.xml'));
+    
+    // Sort slides by number
+    slideFiles.sort((a, b) => {
+      const numA = parseInt(a.replace(/\D/g, ''));
+      const numB = parseInt(b.replace(/\D/g, ''));
+      return numA - numB;
+    });
+    
+    // Process each slide
+    const slideContents = await Promise.all(slideFiles.map(async (slideFile, index) => {
+      const slideContent = await pptxZip.files[slideFile].async('text');
+      
+      // Extract text content from slide XML
+      // This is a simple regex-based extraction that gets text between <a:t> tags
+      // A production implementation might use proper XML parsing
+      const textMatches = slideContent.match(/<a:t>([^<]+)<\/a:t>/g) || [];
+      const extractedText = textMatches
+        .map(match => match.replace(/<a:t>|<\/a:t>/g, ''))
+        .join(' ');
+      
+      return `Slide ${index + 1}: ${extractedText}`;
+    }));
+    
+    // Also try to extract any notes from the presentation
+    const noteFiles = Object.keys(pptxZip.files).filter(fileName => 
+      fileName.startsWith('ppt/notesSlides/notesSlide') && fileName.endsWith('.xml'));
+    
+    const notesContents = await Promise.all(noteFiles.map(async (noteFile, index) => {
+      const noteContent = await pptxZip.files[noteFile].async('text');
+      
+      // Extract notes text content
+      const textMatches = noteContent.match(/<a:t>([^<]+)<\/a:t>/g) || [];
+      const extractedText = textMatches
+        .map(match => match.replace(/<a:t>|<\/a:t>/g, ''))
+        .join(' ');
+      
+      if (extractedText.trim()) {
+        return `Notes ${index + 1}: ${extractedText}`;
+      }
+      return '';
+    }));
+    
+    // Combine slide content and notes
+    const allContent = [...slideContents, ...notesContents.filter(note => note !== '')].join('\n\n');
+    
+    return allContent || 'No text content could be extracted from this PPTX file.';
   } catch (error) {
+    console.error('PPTX processing error:', error);
     throw new Error(`PPTX processing failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
 }
@@ -208,10 +349,50 @@ async function processAudio(buffer: Buffer, mimeType: string): Promise<string> {
  */
 async function processVideo(buffer: Buffer, mimeType: string): Promise<string> {
   try {
-    // For now, return a placeholder - video processing requires ffmpeg
-    // In production, you'd use ffmpeg to extract audio, then process with Whisper
-    return 'Video processing not yet implemented. Please extract audio manually and upload as MP3/WAV.';
+    const { promisify } = require('util');
+    const fs = require('fs');
+    const path = require('path');
+    const os = require('os');
+    const ffmpeg = require('fluent-ffmpeg');
+
+    // Create temporary files for video and extracted audio
+    const tempDir = os.tmpdir();
+    const randomId = Math.random().toString(36).substring(2, 15);
+    const videoPath = path.join(tempDir, `video-${randomId}.mp4`);
+    const audioPath = path.join(tempDir, `audio-${randomId}.mp3`);
+    
+    // Write video buffer to temporary file
+    await promisify(fs.writeFile)(videoPath, buffer);
+    
+    // Extract audio from video using ffmpeg
+    await new Promise((resolve, reject) => {
+      ffmpeg(videoPath)
+        .outputOptions('-vn') // Disable video
+        .audioCodec('libmp3lame') // Use MP3 codec
+        .audioBitrate('128k') // Set bitrate
+        .format('mp3') // Output format
+        .on('error', (err: Error) => reject(err))
+        .on('end', () => resolve(true))
+        .save(audioPath);
+    });
+    
+    // Read the extracted audio file
+    const audioBuffer = await promisify(fs.readFile)(audioPath);
+    
+    // Process the audio with our existing audio processor
+    const transcription = await processAudio(audioBuffer, 'audio/mp3');
+    
+    // Clean up temporary files
+    try {
+      await promisify(fs.unlink)(videoPath);
+      await promisify(fs.unlink)(audioPath);
+    } catch (cleanupError) {
+      console.error('Error cleaning up temporary files:', cleanupError);
+    }
+    
+    return transcription || 'No speech content could be extracted from this video file.';
   } catch (error) {
+    console.error('Video processing error:', error);
     throw new Error(`Video processing failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
 }

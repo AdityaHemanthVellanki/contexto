@@ -1,11 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
+import { getFirebaseAdmin } from '@/lib/firebase-admin';
 import { getFirestoreAdmin } from '@/lib/firestore-admin';
-import { authenticateRequest } from '@/lib/api-auth';
+import { FieldValue } from 'firebase-admin/firestore';
 import { rateLimit } from '@/lib/rate-limiter-memory';
+import { authenticateRequest } from '@/lib/api-auth';
 import { createEmbeddings } from '@/lib/embeddings';
+import { generatePipelineFromPrompt } from '@/utils/azure-openai';
 import { r2, R2_BUCKET } from '@/lib/r2';
 import { GetObjectCommand } from '@aws-sdk/client-s3';
+import { processFile } from '@/lib/fileProcessor';
 import { exportMCPPipeline } from '@/lib/mcpExporter';
 
 // Request schema validation
@@ -13,6 +17,43 @@ const ProcessPipelineSchema = z.object({
   fileId: z.string().min(1),
   purpose: z.string().min(1).max(1000)
 });
+
+/**
+ * Generate a human-readable response about the pipeline processing
+ * using Azure OpenAI to create meaningful summaries
+ */
+async function generatePipelineResponse(pipelineInfo: {
+  fileName: string;
+  fileType: string;
+  purpose: string;
+  chunksCount: number;
+  chunkSize: number;
+  vectorStore: string;
+  indexedCount: number;
+}): Promise<string> {
+  try {
+    // Create a prompt for the OpenAI model to generate a response
+    const prompt = `
+    Generate a concise, informative summary of a document processing pipeline with the following details:
+    - File: ${pipelineInfo.fileName} (${pipelineInfo.fileType})
+    - User's purpose: "${pipelineInfo.purpose}"
+    - Processing: The content has been split into ${pipelineInfo.chunksCount} chunks of ${pipelineInfo.chunkSize} characters each
+    - Storage: All chunks were embedded and indexed in ${pipelineInfo.vectorStore} vector database
+    - Status: Successfully processed ${pipelineInfo.indexedCount} chunks
+    
+    The summary should be professional, technically accurate, and explain what the pipeline has accomplished
+    in a way that's helpful to the user who wants to use this for their stated purpose.
+    `;
+    
+    // Generate pipeline explanation using OpenAI
+    const response = await generatePipelineFromPrompt(prompt);
+    return response.explanation || `Pipeline processing complete for ${pipelineInfo.fileName}. Created ${pipelineInfo.chunksCount} chunks and indexed them in ${pipelineInfo.vectorStore}.`;
+  } catch (error) {
+    console.error('Error generating pipeline response:', error);
+    // Fallback to a basic response without AI generation if something goes wrong
+    return `Pipeline processing complete for ${pipelineInfo.fileName}. Created ${pipelineInfo.chunksCount} chunks and indexed them in ${pipelineInfo.vectorStore}.`;
+  }
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -51,7 +92,7 @@ export async function POST(request: NextRequest) {
     const { fileId, purpose } = validationResult.data;
 
     // Initialize Firestore
-    const db = getFirestoreAdmin();
+    const db = await getFirestoreAdmin();
 
     // 1. Verify file ownership and get file metadata
     const uploadDoc = await db.collection('uploads').doc(fileId).get();
@@ -93,25 +134,60 @@ export async function POST(request: NextRequest) {
       }, { status: 500 });
     }
 
-    // 3. Extract text content (simplified - basic text extraction)
+    // 3. Extract text content with enhanced type detection and error handling
     console.log(`Processing file: ${uploadData.fileName} (${uploadData.fileType})`);
     let extractedText: string;
     
     try {
-      // Simplified text extraction - for demo purposes
-      if (uploadData.fileType.startsWith('text/') || uploadData.fileName.endsWith('.txt')) {
-        extractedText = fileBuffer.toString('utf-8');
-      } else if (uploadData.fileType === 'application/json') {
-        const jsonContent = fileBuffer.toString('utf-8');
-        const parsed = JSON.parse(jsonContent);
-        extractedText = JSON.stringify(parsed, null, 2);
+      // Ensure we have a valid MIME type or detect it from file extension
+      let mimeType = uploadData.fileType;
+      
+      if (!mimeType || mimeType === 'application/octet-stream' || mimeType === '') {
+        // Extract file extension from filename
+        const fileExtension = uploadData.fileName.split('.').pop()?.toLowerCase();
+        console.log(`Missing or generic MIME type. Detecting from extension: ${fileExtension}`);
+        
+        // Map common file extensions to MIME types
+        const mimeMap: Record<string, string> = {
+          'pdf': 'application/pdf',
+          'doc': 'application/msword',
+          'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+          'txt': 'text/plain',
+          'csv': 'text/csv',
+          'jpg': 'image/jpeg',
+          'jpeg': 'image/jpeg',
+          'png': 'image/png',
+          'gif': 'image/gif',
+          'mp3': 'audio/mpeg',
+          'mp4': 'video/mp4',
+          'json': 'application/json',
+          'html': 'text/html'
+        };
+        
+        if (fileExtension && mimeMap[fileExtension]) {
+          mimeType = mimeMap[fileExtension];
+          console.log(`Detected MIME type from extension: ${mimeType}`);
+        }
+      }
+      
+      // Import the file processor for proper content extraction
+      const { processFile } = await import('@/lib/fileProcessor');
+      
+      // Process the file using our comprehensive file processor with properly detected mime type
+      console.log(`Processing with MIME type: ${mimeType}, File: ${uploadData.fileName}, Size: ${fileBuffer.length} bytes`);
+      extractedText = await processFile(fileBuffer, mimeType, uploadData.fileName);
+      
+      if (!extractedText || extractedText.trim() === '') {
+        console.warn('No text content extracted from file, returning empty string');
+        extractedText = ''; // Use empty string instead of throwing error to allow partial processing
       } else {
-        // For other file types, use a placeholder for now
-        extractedText = `Content from ${uploadData.fileName}: This is a demonstration of the MCP pipeline processing system. The file has been successfully uploaded and is being processed through our intelligent chunking, embedding, and retrieval system.`;
+        console.log(`Successfully extracted ${extractedText.length} characters of text`);
       }
     } catch (error) {
       console.error('File processing error:', error);
-      extractedText = `Processed content from ${uploadData.fileName} for demonstration purposes.`;
+      return NextResponse.json({
+        error: `Failed to extract content from file: ${error instanceof Error ? error.message : 'Unknown error'}`
+      }, { status: 422 });
     }
 
     // 4. Intelligent chunking based on content size
@@ -134,10 +210,16 @@ export async function POST(request: NextRequest) {
     try {
       embeddings = await createEmbeddings(chunks);
       console.log(`Generated ${embeddings.length} embeddings`);
+      
+      // Verify that we got valid embeddings
+      if (!embeddings || embeddings.length === 0) {
+        throw new Error('No valid embeddings were generated');
+      }
     } catch (error) {
       console.error('Embeddings generation error:', error);
-      // Continue with demo data for now
-      embeddings = chunks.map(() => ({ embedding: new Array(1536).fill(0).map(() => Math.random()) }));
+      return NextResponse.json({
+        error: `Failed to generate embeddings: ${error instanceof Error ? error.message : 'Unknown error'}`
+      }, { status: 500 });
     }
 
     // 6. Create pipeline JSON structure
@@ -150,7 +232,7 @@ export async function POST(request: NextRequest) {
         fileName: uploadData.fileName,
         fileType: uploadData.fileType,
         purpose,
-        vectorStore: 'firestore', // Simplified for demo
+        vectorStore: 'firestore',
         chunksCount: chunks.length,
         chunkSize,
         overlap
@@ -202,8 +284,17 @@ export async function POST(request: NextRequest) {
           id: 'rag',
           type: 'RAG',
           data: {
-            model: 'gpt-4',
-            response: `Based on your purpose: "${purpose}", I've processed your file "${uploadData.fileName}" through our MCP pipeline. The content has been chunked into ${chunks.length} segments, embedded using Azure OpenAI, and indexed for retrieval. This demonstrates the complete pipeline from data ingestion to RAG-ready processing.`
+            model: process.env.OPENAI_DEPLOYMENT || 'gpt-4',
+            // Generate a real response using Azure OpenAI
+            response: await generatePipelineResponse({
+              fileName: uploadData.fileName,
+              fileType: uploadData.fileType,
+              purpose: purpose,
+              chunksCount: chunks.length,
+              chunkSize: chunkSize,
+              vectorStore: 'firestore',
+              indexedCount: chunks.length
+            })
           }
         }
       ],
@@ -218,6 +309,8 @@ export async function POST(request: NextRequest) {
 
     // 7. Save pipeline to Firestore
     try {
+      // Ensure we have the latest db reference
+      const db = await getFirestoreAdmin();
       await db.collection('pipelines').doc(pipelineId).set({
         ...pipeline,
         userId,
@@ -248,7 +341,9 @@ export async function POST(request: NextRequest) {
 
     // 10. Log usage metrics
     try {
-      await db.collection('usage').add({
+      // Ensure we have the latest db reference for metrics logging
+      const metricsDb = await getFirestoreAdmin();
+      await metricsDb.collection('usage').add({
         userId,
         action: 'pipeline_processed',
         fileId,

@@ -4,65 +4,47 @@ import { useEffect } from 'react';
 import TestPanel from '@/components/panels/TestPanel';
 import { useCanvasStore } from '@/store/useCanvasStore';
 import { AuthProvider } from '@/context/AuthContext';
+import { getAuth } from 'firebase/auth';
+import { getFirestore, collection, query, orderBy, limit, getDocs } from 'firebase/firestore';
 
 export default function TestPage() {
   const { setNodes, setEdges } = useCanvasStore();
   
-  // Create a sample pipeline for testing on initial load
+  // Load user's existing pipelines or create empty canvas
   useEffect(() => {
-    const samplePipeline = {
-      nodes: [
-        {
-          id: 'ds-1',
-          type: 'dataSource',
-          position: { x: 100, y: 100 },
-          data: {
-            type: 'dataSource',
-            label: 'User Input',
-            settings: { sourceType: 'text', content: '' }
-          }
-        },
-        {
-          id: 'ch-1',
-          type: 'chunker',
-          position: { x: 100, y: 250 },
-          data: {
-            type: 'chunker',
-            label: 'Text Splitter',
-            settings: { chunkSize: 1000, chunkOverlap: 200, splitBy: 'token' }
-          }
-        },
-        {
-          id: 'em-1',
-          type: 'embedder',
-          position: { x: 100, y: 400 },
-          data: {
-            type: 'embedder',
-            label: 'Azure Embeddings',
-            settings: { model: 'azure-embedding', dimensions: 1536 }
-          }
-        },
-        {
-          id: 'op-1',
-          type: 'output',
-          position: { x: 400, y: 400 },
-          data: {
-            type: 'output',
-            label: 'Results',
-            settings: { outputFormat: 'rag' }
+    const loadUserPipelines = async () => {
+      try {
+        // Clear canvas initially
+        setNodes([]);
+        setEdges([]);
+        
+        // Check if user is authenticated
+        const auth = getAuth();
+        const user = auth.currentUser;
+        
+        if (user) {
+          // Try to load user's most recent pipeline from Firestore
+          const db = getFirestore();
+          const pipelinesRef = collection(db, 'users', user.uid, 'pipelines');
+          const pipelineQuery = query(pipelinesRef, orderBy('updatedAt', 'desc'), limit(1));
+          
+          const snapshot = await getDocs(pipelineQuery);
+          
+          if (!snapshot.empty) {
+            const pipelineData = snapshot.docs[0].data();
+            if (pipelineData.nodes && pipelineData.edges) {
+              setNodes(pipelineData.nodes);
+              setEdges(pipelineData.edges);
+              return;
+            }
           }
         }
-      ],
-      edges: [
-        { id: 'e1-2', source: 'ds-1', target: 'ch-1' },
-        { id: 'e2-3', source: 'ch-1', target: 'em-1' },
-        { id: 'e3-4', source: 'em-1', target: 'op-1' }
-      ]
+      } catch (error) {
+        console.error('Error loading user pipeline:', error);
+      }
     };
     
-    // Set the sample pipeline in the canvas store
-    setNodes(samplePipeline.nodes);
-    setEdges(samplePipeline.edges);
+    loadUserPipelines();
   }, [setNodes, setEdges]);
   
   return (

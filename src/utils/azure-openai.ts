@@ -2,82 +2,73 @@
 
 /**
  * Utility for Azure OpenAI API calls
- * This is a simplified implementation that would be replaced with actual API calls
+ * Production implementation using Azure OpenAI APIs
  */
 
-// Mock pipeline generation data - to be replaced with actual API integration
-const samplePipelines = [
-  {
-    name: "PDF Processing Pipeline",
-    nodes: [
-      { id: "ds-1", type: "dataSource", position: { x: 100, y: 100 }, data: { type: "dataSource", label: "PDF Loader", settings: { sourceType: "PDF", filepath: "/documents/sample.pdf" } } },
-      { id: "ch-1", type: "chunker", position: { x: 100, y: 250 }, data: { type: "chunker", label: "Text Splitter", settings: { chunkSize: 1000, chunkOverlap: 200, splitBy: "token" } } },
-      { id: "em-1", type: "embedder", position: { x: 100, y: 400 }, data: { type: "embedder", label: "Azure Embeddings", settings: { model: "azure-embedding", dimensions: 1536 } } },
-      { id: "ix-1", type: "indexer", position: { x: 100, y: 550 }, data: { type: "indexer", label: "Firestore Vector Store", settings: { vectorStore: "Firestore", collectionName: "pdf-embeddings" } } },
-      { id: "re-1", type: "retriever", position: { x: 400, y: 400 }, data: { type: "retriever", label: "Retriever", settings: { topK: 5, scoreThreshold: 0.75 } } },
-      { id: "op-1", type: "output", position: { x: 400, y: 550 }, data: { type: "output", label: "Results Formatter", settings: { outputFormat: "JSON", includeMetadata: true } } }
-    ],
-    edges: [
-      { id: "e1-2", source: "ds-1", target: "ch-1", type: "smoothstep", animated: true, style: { stroke: "#2563eb", strokeWidth: 2 } },
-      { id: "e2-3", source: "ch-1", target: "em-1", type: "smoothstep", animated: true, style: { stroke: "#2563eb", strokeWidth: 2 } },
-      { id: "e3-4", source: "em-1", target: "ix-1", type: "smoothstep", animated: true, style: { stroke: "#2563eb", strokeWidth: 2 } },
-      { id: "e4-5", source: "ix-1", target: "re-1", type: "smoothstep", animated: true, style: { stroke: "#2563eb", strokeWidth: 2 } },
-      { id: "e5-6", source: "re-1", target: "op-1", type: "smoothstep", animated: true, style: { stroke: "#2563eb", strokeWidth: 2 } }
-    ]
-  },
-  {
-    name: "Website Scraping Pipeline",
-    nodes: [
-      { id: "ds-1", type: "dataSource", position: { x: 100, y: 100 }, data: { type: "dataSource", label: "URL Loader", settings: { sourceType: "Website URL", filepath: "https://example.com" } } },
-      { id: "ch-1", type: "chunker", position: { x: 100, y: 250 }, data: { type: "chunker", label: "HTML Splitter", settings: { chunkSize: 1500, chunkOverlap: 300, splitBy: "paragraph" } } },
-      { id: "em-1", type: "embedder", position: { x: 400, y: 250 }, data: { type: "embedder", label: "Azure Embeddings", settings: { model: "azure-embedding", dimensions: 1536 } } },
-      { id: "ix-1", type: "indexer", position: { x: 400, y: 400 }, data: { type: "indexer", label: "FAISS Store", settings: { vectorStore: "FAISS (in-memory)", collectionName: "web-scrape" } } },
-      { id: "op-1", type: "output", position: { x: 700, y: 400 }, data: { type: "output", label: "Markdown Output", settings: { outputFormat: "Markdown", includeMetadata: true } } }
-    ],
-    edges: [
-      { id: "e1-2", source: "ds-1", target: "ch-1", type: "smoothstep", animated: true, style: { stroke: "#2563eb", strokeWidth: 2 } },
-      { id: "e2-3", source: "ch-1", target: "em-1", type: "smoothstep", animated: true, style: { stroke: "#2563eb", strokeWidth: 2 } },
-      { id: "e3-4", source: "em-1", target: "ix-1", type: "smoothstep", animated: true, style: { stroke: "#2563eb", strokeWidth: 2 } },
-      { id: "e4-5", source: "ix-1", target: "op-1", type: "smoothstep", animated: true, style: { stroke: "#2563eb", strokeWidth: 2 } }
-    ]
-  }
-];
+import { v4 as uuidv4 } from 'uuid';
+import { db } from '@/lib/firebase';
+import { collection, addDoc } from 'firebase/firestore';
+
+// Environmental variables are used for Azure OpenAI credentials
+const AZURE_OPENAI_API_KEY = process.env.NEXT_PUBLIC_AZURE_OPENAI_API_KEY;
+const AZURE_OPENAI_ENDPOINT = process.env.NEXT_PUBLIC_AZURE_OPENAI_ENDPOINT;
+const AZURE_OPENAI_DEPLOYMENT_ID = process.env.NEXT_PUBLIC_AZURE_OPENAI_DEPLOYMENT_ID;
 
 /**
- * Simulates generating a pipeline from a natural language prompt
- * In production, this would make an actual call to Azure OpenAI
+ * Generate a pipeline from a natural language prompt using Azure OpenAI
  * @param prompt The user's natural language description of the pipeline
  * @returns A promise that resolves to a pipeline definition
  */
 export async function generatePipelineFromPrompt(prompt: string): Promise<{
-  nodes: any[]; 
+  nodes: any[];
   edges: any[];
   explanation: string;
 }> {
-  // Simulate API call delay
-  await new Promise(resolve => setTimeout(resolve, 2000));
-  
-  // Pick a random sample pipeline
-  const randomPipeline = samplePipelines[Math.floor(Math.random() * samplePipelines.length)];
-  
-  // Generate explanation based on the prompt and chosen pipeline
-  const explanation = `Based on your request: "${prompt}", I've created a ${randomPipeline.name.toLowerCase()}.
+  // Check if credentials are configured
+  if (!AZURE_OPENAI_API_KEY || !AZURE_OPENAI_ENDPOINT || !AZURE_OPENAI_DEPLOYMENT_ID) {
+    // In a production environment, we should handle this error properly
+    // For now, we'll use the API endpoint to generate the pipeline
+    return await callPipelineGenerationApi(prompt);
+  }
 
-This pipeline:
-1. Loads data from ${randomPipeline.nodes[0].data.settings.sourceType}
-2. Chunks the content into manageable pieces
-3. Creates embeddings using ${randomPipeline.nodes.find((n: any) => n.type === 'embedder')?.data.settings.model || 'an embedding model'}
-4. Stores vectors in ${randomPipeline.nodes.find((n: any) => n.type === 'indexer')?.data.settings.vectorStore || 'a vector database'}
-${randomPipeline.nodes.find((n: any) => n.type === 'retriever') ? '5. Retrieves relevant content based on queries' : ''}
-${randomPipeline.nodes.find((n: any) => n.type === 'output') ? `6. Formats output as ${randomPipeline.nodes.find((n: any) => n.type === 'output')?.data.settings.outputFormat}` : ''}
+  try {
+    // Log usage for analytics
+    await addDoc(collection(db, "usage"), {
+      type: "pipeline_generation",
+      timestamp: new Date(),
+      prompt: prompt,
+      model: AZURE_OPENAI_DEPLOYMENT_ID,
+      success: true
+    });
 
-You can customize any of these components by clicking on them.`;
-  
-  return {
-    nodes: randomPipeline.nodes,
-    edges: randomPipeline.edges,
-    explanation: explanation
-  };
+    // Call the server-side API to generate the pipeline
+    return await callPipelineGenerationApi(prompt);
+  } catch (error) {
+    console.error("Error generating pipeline:", error);
+    throw new Error(`Failed to generate pipeline: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
+}
+
+/**
+ * Call the server-side API to generate a pipeline
+ * This abstracts the Azure OpenAI API call behind our own API endpoint
+ */
+async function callPipelineGenerationApi(prompt: string) {
+  const response = await fetch('/api/generatePipeline', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ prompt }),
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(`Pipeline generation failed: ${response.status} ${response.statusText} ${errorData.error || ''}`);
+  }
+
+  const data = await response.json();
+  return data;
 }
 
 /**

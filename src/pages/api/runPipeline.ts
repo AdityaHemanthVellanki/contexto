@@ -3,6 +3,10 @@ import { executePipeline, Graph } from '@/services/executePipeline';
 import { verifyIdToken } from '@/lib/auth';
 import { db } from '@/lib/firebase';
 import { doc, getDoc, collection, addDoc, serverTimestamp } from 'firebase/firestore';
+// Import the correct OpenAI client for Azure
+import { OpenAI } from 'openai';
+import { getFirebaseAdmin } from '@/lib/firebase-admin';
+import { modelMapping } from '@/lib/azureOpenAI';
 
 interface RequestBody {
   graph?: Graph;
@@ -11,13 +15,18 @@ interface RequestBody {
   chatMode?: boolean; // Flag to indicate chat-centric mode
 }
 
-interface ResponseData {
-  result: any;
-  response?: any; // Added for chat interface compatibility
-  retrieved?: string[];
-  usageReport?: Record<string, any>;
+// Define response data type
+type ResponseData = {
+  result: string | null;
   error?: string;
-}
+  response?: string;
+  usageReport?: {
+    tokens: number;
+    model: string;
+    timestamp: string;
+  }
+  retrieved?: string[];
+};
 
 /**
  * API route handler for running a pipeline
@@ -25,40 +34,49 @@ interface ResponseData {
  * @param req Next.js API request
  * @param res Next.js API response
  */
-// Helper function to generate mock responses based on the prompt
-async function generateMockResponse(prompt: string): Promise<string> {
-  // Simulate processing time
-  await new Promise(resolve => setTimeout(resolve, 1000));
+// Helper function to generate real responses using Azure OpenAI
+async function generateOpenAIResponse(prompt: string, userId: string): Promise<string> {
+  // Azure OpenAI configuration
+  const azureApiKey = process.env.AZURE_OPENAI_API_KEY;
+  const azureEndpoint = process.env.AZURE_OPENAI_ENDPOINT;
+  const turboDeployment = process.env.AZURE_OPENAI_DEPLOYMENT_TURBO || 'gpt-35-turbo';
   
-  const lowercasePrompt = prompt.toLowerCase();
-  
-  // Return contextual responses based on prompt content
-  if (lowercasePrompt.includes('import') || lowercasePrompt.includes('data')) {
-    return "Your data has been successfully imported and indexed. You can now ask questions about the content. The pipeline processed your files and created embeddings for efficient retrieval. For best results, try asking specific questions about the content of your documents.";
+  if (!azureApiKey || !azureEndpoint) {
+    throw new Error('Azure OpenAI API key or endpoint not configured');
   }
+
+  // Initialize OpenAI client with Azure configuration
+  const openai = new OpenAI({
+    apiKey: azureApiKey,
+    baseURL: `${azureEndpoint}/openai/deployments/${turboDeployment}`,
+    defaultQuery: { 'api-version': '2023-05-15' },
+    defaultHeaders: { 'api-key': azureApiKey }
+  });
   
-  if (lowercasePrompt.includes('export') || lowercasePrompt.includes('pipeline')) {
-    return "You can export your pipeline configuration by clicking the 'Export MCP Pipeline' button below. This will download a JSON file with your pipeline configuration that can be used with the MCP standard. The exported pipeline includes all nodes, edges, and parameters you've configured.";
-  }
+  // Record the usage to Firestore for monitoring and billing
+  const adminDb = getFirebaseAdmin().firestore();
+  await adminDb.collection('usage').add({
+    userId,
+    timestamp: new Date(),
+    service: 'azure-openai',
+    model: turboDeployment,
+    tokens: prompt.length / 4, // Rough estimate for tracking
+    operation: 'pipeline-chat'
+  });
   
-  if (lowercasePrompt.includes('advanced') || lowercasePrompt.includes('view') || lowercasePrompt.includes('toggle')) {
-    return "You can switch to the advanced view by clicking the 'Advanced' toggle in the top-right corner. This will show you the full pipeline editor with the canvas, node palette, and configuration options. The advanced view gives you complete control over the RAG pipeline structure and parameters.";
-  }
+  // Generate a response with OpenAI
+  const response = await openai.chat.completions.create({
+    model: turboDeployment, // This is ignored when using Azure OpenAI
+    messages: [
+      { role: "system", content: "You are an AI assistant helping with RAG pipeline configuration for the Contexto platform. Provide helpful, technical, and accurate information about data processing, embeddings, vector stores, and retrieval configuration." },
+      { role: "user", content: prompt }
+    ],
+    temperature: 0.7,
+    max_tokens: 800
+  });
   
-  if (lowercasePrompt.includes('how') && lowercasePrompt.includes('work')) {
-    return "Contexto works by creating a pipeline that processes your data through several steps: importing and chunking your documents, creating vector embeddings for semantic search, and then using a retrieval-augmented generation (RAG) approach to provide context-aware responses using your own data. The chat interface simplifies this process while the advanced view gives you full control over the pipeline.";
-  }
-  
-  if (lowercasePrompt.includes('firebase') || lowercasePrompt.includes('authentication') || lowercasePrompt.includes('login')) {
-    return "Contexto uses Firebase for authentication, data storage, and analytics. Your pipelines and usage metrics are securely stored in Firestore, and you can sign in with Google or email/password authentication. All data processing happens in your browser for maximum privacy.";
-  }
-  
-  if (lowercasePrompt.includes('customize') || lowercasePrompt.includes('settings') || lowercasePrompt.includes('configure')) {
-    return "You can customize your Contexto experience in several ways: 1) Use the chat interface for simple interactions, 2) Switch to the advanced view for complete pipeline control, 3) Adjust embedding and LLM parameters in the advanced view, or 4) Export your pipeline configuration to share or reuse later.";
-  }
-  
-  // Default response with more context
-  return "I've analyzed your request using the Contexto pipeline. The system has processed your query through the embedding model and retrieved relevant context from your imported data. The RAG pipeline used includes document chunking, vector embedding generation, similarity search, and context-enhanced response generation. To customize how this works, you can use the Advanced view to modify the pipeline structure and parameters.";
+  return response.choices[0]?.message?.content || 
+    "I'm sorry, I couldn't generate a response. Please try again.";
 
 }
 
@@ -165,16 +183,16 @@ export default async function handler(
     try {
       console.log(`Executing pipeline for user ${userId}`);
       
-      // For chat mode with no graph, generate a mock response
+      // For chat mode with no graph, generate a response using Azure OpenAI
       if (chatMode && !graph) {
-        const response = await generateMockResponse(prompt);
+        const response = await generateOpenAIResponse(prompt, userId);
         
         return res.status(200).json({
           result: response,
           response: response, // For chat interface compatibility
           usageReport: {
-            tokens: prompt.length / 4, // Rough estimate
-            model: 'chat-mock-model',
+            model: process.env.AZURE_OPENAI_DEPLOYMENT_TURBO || 'gpt-35-turbo',
+            tokens: Math.floor(prompt.length / 4),
             timestamp: new Date().toISOString()
           }
         });

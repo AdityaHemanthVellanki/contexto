@@ -1,84 +1,108 @@
 rules_version = '2';
 service cloud.firestore {
-  match /databases/{database}/documents {
-
-    // Pipelines: only the owner can read or write their own pipeline docs
-    match /pipelines/{pipelineId} {
-      allow create: if request.auth != null && request.auth.uid == request.resource.data.userId;
-      allow update, delete: if request.auth != null
-                            && request.auth.uid == resource.data.userId;
-      allow read: if request.auth != null
-                  && request.auth.uid == resource.data.userId;
+  match /databases/{db}/documents {
+    // Deny all by default
+    match /{document=**} {
+      allow read, write: if false;
     }
 
-    // Uploads: only the owner can access their own uploads
-    match /uploads/{uploadId} {
+    // === CHAT CONVERSATIONS ===
+    // Hierarchical structure: conversations/{userId}/{chatId}/messages/{msgId}
+    match /conversations/{userId}/{chatId}/messages/{msgId} {
+      allow create: if request.auth != null && request.auth.uid == userId;
+      allow read:   if request.auth != null && request.auth.uid == userId;
+      allow update, delete: if false;
+    }
+    
+    match /conversations/{userId}/{chatId} {
+      allow create: if request.auth != null && request.auth.uid == userId;
+      allow read, update, delete: if request.auth != null && request.auth.uid == userId;
+    }
+
+    // === UPLOADED FILES ===
+    // Structure: uploads/{fileId}
+    match /uploads/{fileId} {
       allow create: if request.auth != null && request.auth.uid == request.resource.data.userId;
       allow read, update: if request.auth != null && request.auth.uid == resource.data.userId;
       // Only allow deletion if the user owns the document and it's not being processed
       allow delete: if request.auth != null && 
                     request.auth.uid == resource.data.userId && 
                     (resource.data.status != "processing");
-      
-      // Queries subcollection: each query belongs to the user who owns the parent upload
-      match /queries/{queryId} {
-        allow create: if request.auth != null && 
-                      get(/databases/$(database)/documents/uploads/$(uploadId)).data.userId == request.auth.uid;
-        allow read: if request.auth != null && 
-                    get(/databases/$(database)/documents/uploads/$(uploadId)).data.userId == request.auth.uid;
-        allow update: if request.auth != null && 
-                      get(/databases/$(database)/documents/uploads/$(uploadId)).data.userId == request.auth.uid;
-        allow delete: if false;
-      }
     }
-
-    // Embeddings: only the owner can access their embeddings
+    
+    // Embeddings for uploads
+    match /uploads/{fileId}/embeddings/{chunkId} {
+      allow create: if request.auth != null && 
+                    get(/databases/$(db)/documents/uploads/$(fileId)).data.userId == request.auth.uid;
+      allow read: if request.auth != null && 
+                get(/databases/$(db)/documents/uploads/$(fileId)).data.userId == request.auth.uid;
+      allow update, delete: if false;
+    }
+    
+    // Legacy support for embeddings collection
     match /embeddings/{embeddingId} {
       allow create: if request.auth != null && request.auth.uid == request.resource.data.userId;
       allow read: if request.auth != null && request.auth.uid == resource.data.userId;
       allow update, delete: if false;
     }
     
-    // Embeddings subcollections (chunks)
+    // Legacy support for embeddings chunks
     match /embeddings/{embeddingId}/{document=**} {
       allow read: if request.auth != null && 
-                    get(/databases/$(database)/documents/embeddings/$(embeddingId)).data.userId == request.auth.uid;
+                get(/databases/$(db)/documents/embeddings/$(embeddingId)).data.userId == request.auth.uid;
       allow write: if false;
     }
+
+    // === PIPELINES ===
+    // Hierarchical structure: pipelines/{userId}/{pipelineId}
+    match /pipelines/{userId}/{pipelineId} {
+      allow create: if request.auth != null && request.auth.uid == userId;
+      allow read, update, delete: if request.auth != null && request.auth.uid == userId;
+    }
     
-    // Exports: only the owner can create and read their exports
+    // Legacy support for old pipeline structure
+    match /pipelines/{pipelineId} {
+      allow create: if request.auth != null && request.auth.uid == request.resource.data.userId;
+      allow read, update, delete: if request.auth != null && request.auth.uid == resource.data.userId;
+    }
+
+    // === EXPORTS ===
+    // Hierarchical structure: exports/{userId}/{exportId}
+    match /exports/{userId}/{exportId} {
+      allow create: if request.auth != null && request.auth.uid == userId;
+      allow read:   if request.auth != null && request.auth.uid == userId;
+      allow update, delete: if false;
+    }
+    
+    // Legacy support for old exports structure
     match /exports/{exportId} {
       allow create: if request.auth != null && request.auth.uid == request.resource.data.userId;
       allow read:   if request.auth != null && request.auth.uid == resource.data.userId;
       allow update, delete: if false;
     }
 
-    // Usage metrics: any authenticated user can write their own usage logs,
-    // but nobody can read them client-side.
-    match /usage_metrics/{entryId} {
-      allow create: if request.auth != null 
-                    && request.auth.uid == request.resource.data.userId;
-      allow read: if false;
-      allow update, delete: if false;
+    // === USAGE METRICS ===
+    // Only allow server-side access via Admin SDK
+    match /usage/{docId} {
+      allow create: if false; // Only via Admin SDK
+      allow read, update, delete: if false;
     }
     
-    // Conversations: only the owner can access their own conversation sessions
-    match /conversations/{sessionId} {
+    match /usage_metrics/{entryId} {
       allow create: if request.auth != null && request.auth.uid == request.resource.data.userId;
-      allow read, update: if request.auth != null && request.auth.uid == resource.data.userId;
-      allow delete: if request.auth != null && request.auth.uid == resource.data.userId;
-      
-      // Messages subcollection: each message belongs to the user who owns the parent conversation
-      match /messages/{messageId} {
-        allow create: if request.auth != null && 
-                      get(/databases/$(database)/documents/conversations/$(sessionId)).data.userId == request.auth.uid;
-        allow read: if request.auth != null && 
-                    get(/databases/$(database)/documents/conversations/$(sessionId)).data.userId == request.auth.uid;
-        allow update: if request.auth != null && 
-                      get(/databases/$(database)/documents/conversations/$(sessionId)).data.userId == request.auth.uid;
-        allow delete: if request.auth != null && 
-                      get(/databases/$(database)/documents/conversations/$(sessionId)).data.userId == request.auth.uid;
-      }
+      allow read, update, delete: if false;
+    }
+
+    // === QUERIES ===
+    // Only allow queries by the document owner
+    match /uploads/{fileId}/queries/{queryId} {
+      allow create: if request.auth != null && 
+                    get(/databases/$(db)/documents/uploads/$(fileId)).data.userId == request.auth.uid;
+      allow read: if request.auth != null && 
+                get(/databases/$(db)/documents/uploads/$(fileId)).data.userId == request.auth.uid;
+      allow update: if request.auth != null && 
+                  get(/databases/$(db)/documents/uploads/$(fileId)).data.userId == request.auth.uid;
+      allow delete: if false;
     }
   }
 }

@@ -1,138 +1,167 @@
 import * as admin from 'firebase-admin';
-import { getApps, initializeApp, cert, AppOptions } from 'firebase-admin/app';
+import { getApps, initializeApp, cert } from 'firebase-admin/app';
 import { debugEnvironment } from './env-debug';
-import { getFirebaseAdminConfig } from './firebase-admin-config';
+import * as fs from 'fs';
+import * as path from 'path';
 
 /**
  * Initialize Firebase Admin SDK
- * Uses configuration from environment variables or firebase-admin-config helper
+ * This implementation uses only real credentials, no mocks
+ * Provides detailed logging and error handling for production readiness
  */
-export function getFirebaseAdmin() {
+export async function getFirebaseAdmin() {
   // Check if Firebase Admin is already initialized
   if (admin.apps.length > 0) {
+    console.log('Firebase Admin SDK already initialized, returning existing instance');
     return admin;
   }
   
   // Print environment debug information to help troubleshoot
   debugEnvironment();
-  console.log('Firebase Admin initialization - Environment check');
+  console.log('Firebase Admin initialization with real production credentials');
   
-  // Get admin configuration with fallbacks
-  const config = getFirebaseAdminConfig();
+  // Create credential configuration object
+  let projectId: string;
+  let clientEmail: string;
+  let privateKey: string;
+  let storageBucket: string | undefined;
   
-  // Detailed logging for troubleshooting
-  console.log(`Firebase Project ID: ${config.projectId ? 'Found' : 'Missing'}`);
-  console.log(`Firebase Client Email: ${config.clientEmail ? 'Found' : 'Missing'}`);
-  console.log(`Firebase Private Key: ${config.privateKey ? 'Found (length: ' + config.privateKey.length + ')' : 'Missing'}`);
+  // Track credential source for debugging
+  let credentialSource: string;
   
-  // Try to handle missing variables gracefully
-  if (!config.projectId) {
-    console.error('Firebase project ID is missing. Please check your environment configuration.');
-    if (process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID) {
-      console.log('Falling back to NEXT_PUBLIC_FIREBASE_PROJECT_ID:', process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID);
-      config.projectId = process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID;
-    } else {
-      throw new Error('Firebase project ID is required but not available in any configuration.');
+  // 1. Try environment variables (preferred method)
+  if (process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY) {
+    projectId = process.env.FIREBASE_PROJECT_ID;
+    clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
+    
+    // Ensure proper formatting of private key (handles escaped newlines in environment variables)
+    privateKey = process.env.FIREBASE_PRIVATE_KEY;
+    if (privateKey.indexOf('\n') === -1 && privateKey.includes('\\n')) {
+      privateKey = privateKey.replace(/\\n/g, '\n');
+      console.log('Converted escaped newlines in FIREBASE_PRIVATE_KEY');
+    }
+    
+    storageBucket = process.env.FIREBASE_STORAGE_BUCKET;
+    credentialSource = 'environment_variables';
+    console.log(`Using Firebase Admin credentials from environment variables for project: ${projectId}`);
+  } 
+  // 2. Try JSON service account from environment
+  else if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+    try {
+      const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+      projectId = serviceAccount.project_id || serviceAccount.projectId;
+      clientEmail = serviceAccount.client_email || serviceAccount.clientEmail;
+      privateKey = serviceAccount.private_key || serviceAccount.privateKey;
+      storageBucket = serviceAccount.storage_bucket || serviceAccount.storageBucket || `${projectId}.appspot.com`;
+      credentialSource = 'service_account_json_env';
+      console.log(`Using Firebase Admin credentials from FIREBASE_SERVICE_ACCOUNT environment variable for project: ${projectId}`);
+    } catch (error) {
+      throw new Error(`Failed to parse FIREBASE_SERVICE_ACCOUNT: ${error instanceof Error ? error.message : 'Invalid format'}`);
+    }
+  } 
+  // 3. Try service account JSON file
+  else {
+    try {
+      const serviceAccountPath = path.join(process.cwd(), 'service-account.json');
+      if (fs.existsSync(serviceAccountPath)) {
+        const serviceAccountContent = fs.readFileSync(serviceAccountPath, 'utf8');
+        const serviceAccount = JSON.parse(serviceAccountContent);
+        
+        // Verify we have required fields for production use
+        if (!serviceAccount.project_id || !serviceAccount.client_email || !serviceAccount.private_key) {
+          throw new Error('Service account file is missing required fields (project_id, client_email, private_key)');
+        }
+        
+        projectId = serviceAccount.project_id;
+        clientEmail = serviceAccount.client_email;
+        privateKey = serviceAccount.private_key;
+        
+        // Ensure proper formatting of private key
+        if (privateKey.indexOf('\n') === -1 && privateKey.includes('\\n')) {
+          privateKey = privateKey.replace(/\\n/g, '\n');
+          console.log('Converted escaped newlines in service account private key');
+        }
+        
+        storageBucket = serviceAccount.storage_bucket || `${projectId}.appspot.com`;
+        credentialSource = 'service_account_json_file';
+        console.log(`Using Firebase Admin credentials from service-account.json file for project: ${projectId}`);
+      } else {
+        throw new Error('Service account file not found at: ' + serviceAccountPath);
+      }
+    } catch (error) {
+      throw new Error(`Failed to load service account file: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
-  
+  // Validate required credentials
+  if (!projectId || !clientEmail || !privateKey) {
+    throw new Error('Firebase Admin initialization failed: Missing required credentials (projectId, clientEmail, or privateKey)');
+  }
+
   try {
-    // For development environment, we can use the Firebase emulators
-    if (process.env.NODE_ENV === 'development') {
-      console.log('Using Firebase Admin for development');
-      
-      // Check if emulators are configured
-      const useEmulators = process.env.FIREBASE_AUTH_EMULATOR_HOST || process.env.FIRESTORE_EMULATOR_HOST;
-      
-      if (useEmulators) {
-        console.log('Using Firebase emulators for development');
-        process.env.FIREBASE_AUTH_EMULATOR_HOST = process.env.FIREBASE_AUTH_EMULATOR_HOST || 'localhost:9099';
-        process.env.FIRESTORE_EMULATOR_HOST = process.env.FIRESTORE_EMULATOR_HOST || 'localhost:8080';
-        
-        admin.initializeApp({
-          projectId: config.projectId
-        });
-        
-        console.log('Firebase Admin SDK initialized with emulator settings');
-      } else {
-        // For development without emulators, use credentials if available
-        if (config.clientEmail && config.privateKey) {
-          console.log('Initializing Firebase Admin with credentials in development mode');
-          admin.initializeApp({
-            credential: cert({
-              projectId: config.projectId,
-              clientEmail: config.clientEmail,
-              privateKey: config.privateKey
-            }),
-            storageBucket: config.storageBucket || `${config.projectId}.appspot.com`
-          });
-        } else {
-          // Fallback to application default credentials or project ID only
-          console.log('Initializing Firebase Admin with project ID only in development mode');
-          admin.initializeApp({
-            projectId: config.projectId
-          });
-        }
-      }
-      
-      return admin;
+    // Log details about credentials (without exposing sensitive info)
+    console.log('Initializing Firebase Admin SDK with:');
+    console.log(`- Project ID: ${projectId}`);
+    console.log(`- Client Email: ${clientEmail.substring(0, 5)}...${clientEmail.substring(clientEmail.indexOf('@'))}`);
+    console.log(`- Private Key: ${privateKey.substring(0, 15)}...`);
+    console.log(`- Storage Bucket: ${storageBucket || `${projectId}.appspot.com`}`);
+    console.log(`- Credential Source: ${credentialSource}`);
+    
+    // Verify private key format (should include proper BEGIN/END markers and newlines)
+    if (!privateKey.includes('BEGIN PRIVATE KEY') || !privateKey.includes('END PRIVATE KEY')) {
+      throw new Error('Firebase Admin initialization failed: Private key is malformed (missing BEGIN/END markers)');
     }
     
-    // For production, we need proper credentials
-    if (!config.clientEmail || !config.privateKey) {
-      console.error('Firebase Admin SDK credentials incomplete:');
-      console.error('- Client Email:', config.clientEmail ? 'Present' : 'Missing');
-      console.error('- Private Key:', config.privateKey ? 'Present' : 'Missing');
-      
-      // Special case for Vercel/Netlify/etc. where we might need to parse private key differently
-      if (process.env.FIREBASE_PRIVATE_KEY && !config.privateKey) {
-        config.privateKey = process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n');
-        console.log('Reformatted private key from environment variable');
-      } else if (process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID && !process.env.FIREBASE_PRIVATE_KEY) {
-        // Try creating a temporary application configuration for simple operations
-        // This won't have full admin privileges but might work for some operations
-        console.log('Creating temporary app configuration with limited functionality');
-        admin.initializeApp({
-          projectId: config.projectId
-        });
-        console.warn('⚠️ Firebase Admin initialized WITHOUT admin credentials. Some operations may fail.');
-        return admin;
-      } else {
-        throw new Error('Firebase Admin SDK requires valid client email and private key.');
-      }
-    }
-    
-    // Initialize Firebase Admin with explicit credentials
-    admin.initializeApp({
+    // Initialize Firebase Admin with explicit credentials - no mock fallbacks
+    const app = admin.initializeApp({
       credential: cert({
-        projectId: config.projectId,
-        clientEmail: config.clientEmail,
-        privateKey: config.privateKey
+        projectId,
+        clientEmail,
+        privateKey
       }),
-      storageBucket: config.storageBucket || `${config.projectId}.appspot.com` // Use config bucket or default
+      storageBucket: storageBucket || `${projectId}.appspot.com`
     });
     
-    // Log the configured storage bucket for debugging
-    console.log(`Firebase Admin initialized with bucket: ${config.storageBucket || `${config.projectId}.appspot.com`}`);
+    // Configure Firestore settings
+    const db = admin.firestore();
+    db.settings({ ignoreUndefinedProperties: true });
     
-    console.log('Firebase Admin SDK initialized successfully');
+    // Test Firestore connection to verify credentials work
+    try {
+      const testDocRef = db.collection('_initialization_test').doc('test');
+      await testDocRef.set({
+        timestamp: admin.firestore.FieldValue.serverTimestamp(),
+        initialized: true
+      });
+      await testDocRef.delete();  // Clean up the test document
+      console.log('Firestore connection verified successfully');
+    } catch (firestoreError) {
+      console.error('Firestore connection test failed:', firestoreError);
+      // Continue anyway as this might be a permissions issue, not a credential issue
+    }
+    
+    console.log(`Firebase Admin SDK initialized successfully with real credentials (${credentialSource})`);
+    
     return admin;
   } catch (error) {
     console.error('Failed to initialize Firebase Admin SDK:', error);
-    throw new Error(`Firebase Admin initialization failed: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(`Firebase Admin initialization failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
 }
 
 /**
  * Get Firestore database instance
+ * @returns A Promise that resolves to a Firestore instance
  */
-export function getFirestore() {
-  return getFirebaseAdmin().firestore();
+export async function getFirestoreDB() {
+  const adminApp = await getFirebaseAdmin();
+  return adminApp.firestore();
 }
 
 /**
  * Get Firebase Auth instance
+ * @returns A Promise that resolves to a Firebase Auth instance
  */
-export function getAuth() {
-  return getFirebaseAdmin().auth();
+export async function getAuth() {
+  const adminApp = await getFirebaseAdmin();
+  return adminApp.auth();
 }

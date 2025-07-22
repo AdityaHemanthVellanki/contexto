@@ -10,12 +10,15 @@ import { modelMapping } from '@/lib/azureOpenAI';
 // Import firebase services
 import { getAuth } from 'firebase/auth';
 import { getFirestore, collection, addDoc, serverTimestamp } from 'firebase/firestore';
+import { getAnalytics, logEvent } from 'firebase/analytics';
+import { app } from '@/lib/firebase';
 
 export default function ChatPromptWindow() {
   const [prompt, setPrompt] = useState('');
   const [textareaHeight, setTextareaHeight] = useState(80);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const analytics = getAnalytics(app);
 
   const { 
     messages, 
@@ -81,57 +84,70 @@ export default function ChatPromptWindow() {
         status: 'pending'
       });
       
-      // For now, simulate a response
-      await new Promise(resolve => setTimeout(resolve, 1500));
-      
-      // Example response (would come from API)
-      const mockPipelineData = {
-        nodes: [
-          {
-            id: 'dataSource-1',
-            type: 'dataSource',
-            position: { x: 100, y: 100 },
-            data: {
-              type: 'dataSource',
-              label: 'PDF Files',
-              settings: { sourceType: 'PDF' }
-            }
-          },
-          {
-            id: 'chunker-1',
-            type: 'chunker',
-            position: { x: 300, y: 100 },
-            data: {
-              type: 'chunker',
-              label: 'Text Splitter',
-              settings: { chunkSize: 1000 }
-            }
-          },
-          {
-            id: 'embedder-1',
-            type: 'embedder',
-            position: { x: 500, y: 100 },
-            data: {
-              type: 'embedder',
-              label: 'Firebase Embeddings',
-              settings: { model: modelMapping.embed }
-            }
+      const handleGeneratePipeline = async (userMessage: string) => {
+        try {
+          setIsGenerating(true);
+          
+          // Clear existing canvas
+          setNodes([]);
+          setEdges([]);
+          
+          // Add user message
+          addMessage('user', userMessage);
+          
+          // Get the current user from Firebase
+          const user = auth.currentUser;
+          if (!user) {
+            console.error('User is not authenticated');
+            addMessage('assistant', 'You need to be signed in to use this feature.');
+            setIsGenerating(false);
+            return;
           }
-        ],
-        edges: [
-          { id: 'edge-1-2', source: 'dataSource-1', target: 'chunker-1' },
-          { id: 'edge-2-3', source: 'chunker-1', target: 'embedder-1' }
-        ],
-        summary: "Created a simple pipeline that processes PDF files, chunks the content into 1000-token segments, and creates embeddings using Azure's embedding model."
+          
+          // Send analytics event
+          logEvent(analytics, 'generate_pipeline_request', {
+            userId: user.uid,
+            messageLength: userMessage.length,
+          });
+          
+          const token = await user.getIdToken();
+          
+          // Call the real API to generate a pipeline
+          const response = await fetch('/api/generatePipeline', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${token}`
+            },
+            body: JSON.stringify({
+              prompt: userMessage,
+              userId: user.uid
+            })
+          });
+
+          if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`API returned ${response.status}: ${errorText}`);
+          }
+
+          const pipelineData = await response.json();
+          
+          // Add assistant message with pipeline data
+          addMessage('assistant', `I generated a pipeline based on your description. ${pipelineData.summary || 'You can see it in the canvas now.'}`);
+          
+          // Update the canvas with the generated nodes and edges
+          setNodes(pipelineData.nodes);
+          setEdges(pipelineData.edges);
+        } catch (apiError: any) {
+          console.error('Pipeline generation API error:', apiError);
+          const errorMessage = apiError.message || 'Unknown error';
+          addMessage('assistant', `Sorry, I encountered an error while generating the pipeline: ${errorMessage}. Please try again.`);
+        } finally {
+          setIsGenerating(false);
+        }
       };
-      
-      // Add assistant message with pipeline data
-      addMessage('assistant', 'I generated a pipeline based on your description. You can see it in the canvas now.');
-      
-      // Update the canvas with the generated nodes and edges
-      setNodes(mockPipelineData.nodes);
-      setEdges(mockPipelineData.edges);
-      
+
+      await handleGeneratePipeline(prompt);
     } catch (error) {
       console.error('Error generating pipeline:', error);
       

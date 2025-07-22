@@ -55,7 +55,14 @@ export async function exportMCPPipeline(pipeline: Pipeline, userId: string): Pro
     const packageJson = generatePackageJson(validatedPipeline);
     zip.file('package.json', JSON.stringify(packageJson, null, 2));
 
-    // 4. Add Dockerfile
+    // 4. Add vectorStoreClient.js
+    const fs = require('fs');
+    const path = require('path');
+    const vectorStoreClientPath = path.join(process.cwd(), 'src', 'lib', 'templates', 'vectorStoreClient.js');
+    const vectorStoreClient = fs.readFileSync(vectorStoreClientPath, 'utf8');
+    zip.file('vectorStoreClient.js', vectorStoreClient);
+
+    // 5. Add Dockerfile
     const dockerfile = generateDockerfile();
     zip.file('Dockerfile', dockerfile);
 
@@ -197,17 +204,40 @@ class MCPPipelineServer {
 
   async processData(input, options = {}) {
     try {
-      // Simulate pipeline processing
+      // Process data through the pipeline with real implementation
       const chunks = this.chunkText(input, options.chunkSize || ${pipeline.metadata.chunkSize});
       
-      return {
-        content: [
-          {
-            type: 'text',
-            text: \`Processed \${chunks.length} chunks through ${pipeline.metadata.vectorStore} pipeline.\\n\\nOriginal purpose: ${pipeline.metadata.purpose}\\n\\nProcessing completed successfully.\`
+      // Initialize vector store client (from environment configuration)
+      const vectorStoreClient = require('./vectorStoreClient');
+      
+      // Process chunks through vector store (real implementation)
+      try {
+        // Embed text chunks
+        const embedResult = await vectorStoreClient.embed(chunks);
+        
+        // Get embedding model name for reporting
+        const embeddingModel = embedResult && embedResult.model ? embedResult.model : 'default';
+        
+        // Index embeddings in vector database
+        await vectorStoreClient.index(embedResult.embeddings, chunks, {
+          metadata: {
+            source: 'mcp_server_request',
+            timestamp: new Date().toISOString()
           }
-        ]
-      };
+        });
+        
+        return {
+          content: [
+            {
+              type: 'text',
+              text: \`Successfully processed \${chunks.length} chunks through ${pipeline.metadata.vectorStore} pipeline.\n\nOriginal purpose: ${pipeline.metadata.purpose}\n\nEmbeddings created and indexed with \${embeddingModel} model.\nVector store: ${pipeline.metadata.vectorStore}\nIndex status: Complete\`
+            }
+          ]
+        };
+      } catch (vectorError) {
+        console.error('Vector processing error:', vectorError);
+        throw new Error(\`Vector processing failed: \${vectorError.message}\`);
+      }
     } catch (error) {
       throw new Error(\`Processing failed: \${error.message}\`);
     }
@@ -476,22 +506,42 @@ async function logExport(
   downloadUrl: string
 ): Promise<void> {
   try {
+    // Use the firestore-admin module which properly initializes Firebase Admin
     const { getFirestoreAdmin } = await import('./firestore-admin');
-    const db = getFirestoreAdmin();
-
-    await db.collection('exports').doc(exportId).set({
+    const db = await getFirestoreAdmin();
+    
+    // Log detailed information for debugging
+    console.log(`Attempting to log export with ID: ${exportId}`);
+    console.log(`User ID for export: ${userId}`);
+    
+    // Create export document with complete metadata
+    const exportData = {
       exportId,
       pipelineId,
-      userId,
+      userId, // Make sure this matches the user's Firebase Auth UID
       r2Key,
       downloadUrl,
-      createdAt: new Date(),
-      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) // 7 days
-    });
+      status: 'completed',
+      fileType: 'mcp-pipeline',
+      createdAt: new Date(), // Use JavaScript Date object for server-side operations
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days
+      metadata: {
+        exportType: 'mcp',
+        timestamp: new Date().toISOString()
+      }
+    };
+    
+    // Log the data being written for debugging
+    console.log('Writing export data to Firestore:', JSON.stringify(exportData, null, 2));
+    
+    // Write to Firestore using admin SDK which bypasses security rules
+    await db.collection('exports').doc(exportId).set(exportData);
 
-    console.log(`Logged export: ${exportId}`);
+    console.log(`Successfully logged export: ${exportId} for user ${userId}`);
   } catch (error) {
-    console.error('Failed to log export:', error);
-    // Don't throw error for logging failures
+    // Detailed error logging
+    console.error('Failed to log export to Firestore:', error);
+    console.error('Error details:', JSON.stringify(error, Object.getOwnPropertyNames(error)));
+    // Don't throw error for logging failures to prevent blocking the export process
   }
 }

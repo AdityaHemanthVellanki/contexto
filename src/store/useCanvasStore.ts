@@ -176,7 +176,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
           label: 'PDF Loader',
           settings: {
             sourceType: 'PDF',
-            filepath: '/documents/sample.pdf',
+            filepath: '',
           }
         }
       },

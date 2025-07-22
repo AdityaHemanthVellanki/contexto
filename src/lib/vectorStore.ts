@@ -35,7 +35,7 @@ class FirestoreVectorStore implements VectorStore {
 
   async upsert(documents: VectorDocument[]): Promise<void> {
     const { getFirestoreAdmin } = await import('./firestore-admin');
-    const db = getFirestoreAdmin();
+    const db = await getFirestoreAdmin();
     
     const batch = db.batch();
     
@@ -55,7 +55,7 @@ class FirestoreVectorStore implements VectorStore {
 
   async query(embedding: number[], topK: number): Promise<VectorQueryResult[]> {
     const { getFirestoreAdmin } = await import('./firestore-admin');
-    const db = getFirestoreAdmin();
+    const db = await getFirestoreAdmin();
     
     // Simple cosine similarity search (for production, use specialized vector DB)
     const vectorsSnapshot = await db.collection('vectors').limit(100).get();

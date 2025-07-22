@@ -1,4 +1,4 @@
-import { getFirestore } from '@/lib/firebase-admin';
+import { getFirestoreDB } from '@/lib/firebase-admin';
 
 // Define type for embedding results
 export interface EmbeddingResult {
@@ -172,7 +172,7 @@ export async function findSimilarChunks(queryText: string, fileId: string, limit
     const queryEmbedding = queryEmbeddingResult[0].embedding;
     
     // Get the Firebase DB instance
-    const db = getFirestore();
+    const db = await getFirestoreDB();
     
     // Get all chunks for the file
     const chunksRef = db.collection('chunks').where('fileId', '==', fileId);
@@ -184,7 +184,7 @@ export async function findSimilarChunks(queryText: string, fileId: string, limit
     }
     
     // Calculate similarity scores
-    const results = chunksSnapshot.docs.map(doc => {
+    const results = chunksSnapshot.docs.map((doc: FirebaseFirestore.QueryDocumentSnapshot) => {
       const chunk = doc.data();
       const embedding = chunk.embedding;
       
@@ -210,7 +210,7 @@ export async function findSimilarChunks(queryText: string, fileId: string, limit
     
     // Sort by similarity and take the top N results
     return results
-      .sort((a, b) => b.similarity - a.similarity)
+      .sort((a: any, b: any) => b.similarity - a.similarity)
       .slice(0, limit);
     
   } catch (error) {

@@ -33,7 +33,7 @@ export async function authenticateRequest(request: NextRequest): Promise<{
     // Production verification with proper error handling
     try {
       // Get Firebase Auth instance
-      const auth = getAuth();
+      const auth = await getAuth();
       
       // Verify the token with Firebase
       const decodedToken = await auth.verifyIdToken(token, true); // Force token refresh check

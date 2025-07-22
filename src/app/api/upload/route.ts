@@ -1,24 +1,66 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getFirestore } from '@/lib/firebase-admin';
 import * as admin from 'firebase-admin';
 import { authenticateRequest } from '@/lib/api-auth';
 import { rateLimit } from '@/lib/rate-limiter-memory';
 import { r2, R2_BUCKET } from '@/lib/r2';
 import { PutObjectCommand } from '@aws-sdk/client-s3';
 
+// Import Firebase Admin SDK and Firestore admin
+import { getFirebaseAdmin } from '@/lib/firebase-admin';
+import { getFirestoreAdmin } from '@/lib/firestore-admin';
+
 /**
  * Handle binary file upload directly from raw request body
  * This is the recommended approach for the new R2 storage implementation
+ * Also works as a fallback for various types of uploads
  */
 async function handleBinaryUpload(request: NextRequest, userId: string): Promise<NextResponse> {
   // Get file metadata from headers
-  const filename = request.headers.get('x-filename');
-  const mimetype = request.headers.get('x-mimetype');
+  let filename = request.headers.get('x-filename');
+  let mimetype = request.headers.get('x-mimetype') || request.headers.get('content-type');
   
-  if (!filename || !mimetype) {
-    return NextResponse.json({ 
-      message: 'Missing required headers: x-filename and x-mimetype' 
-    }, { status: 400 });
+  // Generate default values if headers are missing
+  if (!filename) {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    filename = `upload-${timestamp}.txt`;
+    console.log(`No filename provided, using default: ${filename}`);
+  }
+  
+  // Detect file type from filename extension if mimetype is missing or generic
+  if (!mimetype || mimetype === 'application/octet-stream') {
+    const fileExtension = filename.split('.').pop()?.toLowerCase();
+    console.log(`Detecting mimetype from extension: ${fileExtension}`);
+    
+    // Map common file extensions to MIME types
+    const mimeMap: Record<string, string> = {
+      'pdf': 'application/pdf',
+      'doc': 'application/msword',
+      'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'xls': 'application/vnd.ms-excel',
+      'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'ppt': 'application/vnd.ms-powerpoint',
+      'pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      'txt': 'text/plain',
+      'csv': 'text/csv',
+      'jpg': 'image/jpeg',
+      'jpeg': 'image/jpeg',
+      'png': 'image/png',
+      'gif': 'image/gif',
+      'svg': 'image/svg+xml',
+      'mp3': 'audio/mpeg',
+      'mp4': 'video/mp4',
+      'json': 'application/json',
+      'html': 'text/html',
+      'xml': 'application/xml',
+    };
+    
+    if (fileExtension && mimeMap[fileExtension]) {
+      mimetype = mimeMap[fileExtension];
+      console.log(`Detected mimetype from extension: ${mimetype}`);
+    } else {
+      mimetype = 'application/octet-stream';
+      console.log(`Could not detect mimetype, using default: ${mimetype}`);
+    }
   }
   
   // Create a unique file identifier
@@ -75,10 +117,13 @@ async function handleBinaryUpload(request: NextRequest, userId: string): Promise
       ? `${process.env.CF_R2_ENDPOINT}/${R2_BUCKET}/${encodeURIComponent(key)}`
       : `https://${R2_BUCKET}.r2.cloudflarestorage.com/${encodeURIComponent(key)}`;
     
-    // Store metadata in Firestore
-    const uploadRef = getFirestore().collection('uploads').doc(uploadId);
+    // Store metadata in Firestore using Firebase Admin SDK directly
+    const db = await getFirestoreAdmin();
+    const uploadRef = db.collection('uploads').doc(uploadId);
+    
+    // Create complete document with all required fields including userId
     await uploadRef.set({
-      userId,
+      userId,  // This is crucial for security rules - matches the authenticated user
       fileId: uploadId,
       fileName: filename,
       fileType: mimetype,
@@ -87,7 +132,7 @@ async function handleBinaryUpload(request: NextRequest, userId: string): Promise
       r2Key: key,
       uploadedAt: admin.firestore.FieldValue.serverTimestamp(),
       status: 'uploaded',
-    });
+    }, { merge: false }); // Ensure complete document replacement
     
     return NextResponse.json({
       fileId: uploadId,
@@ -102,8 +147,7 @@ async function handleBinaryUpload(request: NextRequest, userId: string): Promise
   }
 }
 
-// Initialize Firebase Admin services
-const db = getFirestore();
+// Use Firebase Admin FieldValue directly - no need for an instance
 const FieldValue = admin.firestore.FieldValue;
 
 export async function POST(request: NextRequest) {
@@ -149,11 +193,32 @@ export async function POST(request: NextRequest) {
     // For debugging purposes
     console.log(`Upload request with Content-Type: "${contentType}"`);
     console.log(`Request method: ${request.method}`);
+    console.log(`Headers: ${JSON.stringify([...request.headers.entries()])}`); // Log all headers
     
-    // Handle binary upload
-    if (contentType === 'application/octet-stream') {
+    // Handle binary uploads - support a wide range of content types
+    const binaryContentTypes = [
+      'application/octet-stream',
+      'application/pdf',
+      'application/msword',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'image/',
+      'audio/',
+      'video/',
+      'application/zip',
+      'application/x-rar-compressed',
+      'application/vnd.ms-excel',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'application/vnd.ms-powerpoint',
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    ];
+    
+    const isBinaryUpload = binaryContentTypes.some(type => contentType.includes(type));
+    
+    // If it's a binary file or no content type is specified, handle as binary upload
+    if (isBinaryUpload || !contentType) {
+      console.log(`Handling as binary upload with content type: ${contentType || 'unspecified'}`);
       return await handleBinaryUpload(request, userId);
-    } 
+    }
     
     // Handle JSON upload (client sending metadata with file data as base64 or URL)
     if (contentType.includes('application/json')) {
@@ -177,14 +242,28 @@ export async function POST(request: NextRequest) {
       }
     }
     
-    // Check if content type is valid for formData parsing
-    if (!contentType.includes('multipart/form-data') && !contentType.includes('application/x-www-form-urlencoded')) {
-      console.error(`Invalid content type for formData: "${contentType}"`);
-      return NextResponse.json({ 
-        message: 'Invalid Content-Type. Expected multipart/form-data, application/x-www-form-urlencoded, application/json, or application/octet-stream', 
-        received: contentType || '(empty)',
-        hint: 'Make sure your upload request includes the proper Content-Type header'
-      }, { status: 400 });
+    // Handle empty Content-Type (browser might not always set it properly)
+    if (!contentType) {
+      console.log('Empty Content-Type detected, processing as binary upload');
+      // For empty Content-Type, process as binary upload
+      return await handleBinaryUpload(request, userId);
+    }
+    // Process non-multipart and non-form-urlencoded content types appropriately
+    else if (!contentType.includes('multipart/form-data') && !contentType.includes('application/x-www-form-urlencoded')) {
+      console.log(`Content-Type is not form data: "${contentType}"`);
+      
+      // If it's a binary type, handle as binary upload
+      if (contentType.includes('application/') || 
+          contentType.includes('text/') ||
+          contentType.includes('image/') ||
+          contentType.includes('video/')) {
+        console.log('Processing as binary upload');
+        return await handleBinaryUpload(request, userId);
+      }
+      
+      // For unrecognized types, handle as binary upload as a fallback
+      console.log('Unrecognized Content-Type, falling back to binary upload');
+      return await handleBinaryUpload(request, userId);
     }
     
     // Process multipart/form-data (standard form upload)
@@ -266,6 +345,7 @@ export async function POST(request: NextRequest) {
         console.log(`Generated file URL: ${fileUrl}`);
         
         // Store only metadata in Firestore (not the file content)
+        const db = await getFirestoreAdmin();
         const uploadRef = db.collection('uploads').doc(uploadId);
         await uploadRef.set({
           userId,

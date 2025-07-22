@@ -149,7 +149,7 @@ async function logRAGUsage(
 ): Promise<void> {
   try {
     const { getFirestoreAdmin } = await import('./firestore-admin');
-    const db = getFirestoreAdmin();
+    const db = await getFirestoreAdmin();
 
     await db.collection('rag_usage').add({
       fileId,

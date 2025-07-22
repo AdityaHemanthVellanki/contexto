@@ -211,7 +211,7 @@ export async function POST(request: NextRequest) {
     const { fileId, pipelineId } = validationResult.data;
 
     // Initialize Firestore
-    const db = getFirestoreAdmin();
+    const db = await getFirestoreAdmin();
 
     // Load file metadata
     const uploadDoc = await db.collection('uploads').doc(fileId).get();

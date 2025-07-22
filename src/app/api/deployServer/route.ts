@@ -5,7 +5,7 @@ import { authenticateRequest } from '@/lib/api-auth';
 import { rateLimit } from '@/lib/rate-limiter-memory';
 import { r2, R2_BUCKET } from '@/lib/r2';
 import { GetObjectCommand } from '@aws-sdk/client-s3';
-import { getStoreSpecificConfig, getVectorStoreApiKey, setVercelEnvironmentVariables, generateMockEmbedding } from '@/lib/vercel-deploy';
+import { getStoreSpecificConfig, getVectorStoreApiKey, setVercelEnvironmentVariables, generateEmbedding } from '@/lib/vercel-deploy';
 import fs from 'fs/promises';
 import path from 'path';
 
@@ -155,7 +155,7 @@ export async function POST(request: NextRequest) {
           try {
             // Generate embeddings for the input
             // In a production environment, this would use a proper embeddings model
-            const embedding = await generateMockEmbedding(input);
+            const embedding = await generateEmbedding(input);
             
             // Query the vector store
             const results = await store.query(embedding, topK);
@@ -356,7 +356,7 @@ export async function POST(request: NextRequest) {
     const { pipelineId } = validationResult.data;
 
     // Initialize Firestore
-    const db = getFirestoreAdmin();
+    const db = await getFirestoreAdmin();
 
     // Load pipeline metadata
     const pipelineDoc = await db.collection('pipelines').doc(pipelineId).get();

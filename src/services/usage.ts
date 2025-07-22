@@ -1,6 +1,8 @@
 import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
-import { getFirestore, FieldValue } from 'firebase-admin/firestore';
+
+// Import Firebase Admin SDK for server-side usage
+import { getFirebaseAdmin } from '@/lib/firebase-admin';
 
 /**
  * Token usage metrics interface
@@ -50,18 +52,26 @@ export async function logUsage(
         console.warn(`Client-side usage logging failed: ${clientError instanceof Error ? clientError.message : 'Unknown error'}`);
       }
     } else {
-      // Server-side Firebase Admin SDK
+      // Server-side Firebase Admin SDK - using real implementation
       try {
-        const adminDb = getFirestore();
+        // Get properly initialized Firebase Admin instance
+        const admin = getFirebaseAdmin();
+        const adminDb = admin.firestore();
+        
+        // Use server timestamp from admin SDK
         await adminDb.collection('usage_metrics').add({
           userId,
           callType,
           promptTokens: usage.promptTokens,
           completionTokens: usage.completionTokens,
           totalTokens: usage.promptTokens + usage.completionTokens,
-          timestamp: FieldValue.serverTimestamp(),
-          environment: 'server'
+          timestamp: admin.firestore.FieldValue.serverTimestamp(),
+          environment: 'server',
+          createdAt: new Date().toISOString() // Fallback timestamp
         });
+        
+        // Add debug log for tracking
+        console.log(`Usage metrics logged for user ${userId} - ${callType}`);
       } catch (serverError) {
         // Log error but don't throw - server logging should not block execution
         console.warn(`Server-side usage logging failed: ${serverError instanceof Error ? serverError.message : 'Unknown error'}`);

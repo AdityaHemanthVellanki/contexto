@@ -2,6 +2,7 @@
  * Helper functions for Vercel deployments
  */
 import { VercelFile } from '../types/deployment';
+import OpenAI from 'openai';
 
 /**
  * Get vector store API key based on store type
@@ -92,14 +93,33 @@ export async function setVercelEnvironmentVariables(
 }
 
 /**
- * Generate mock embedding for testing
- * In production, this would call a real embedding service
+ * Generate embedding using Azure OpenAI
  */
-export async function generateMockEmbedding(text: string): Promise<number[]> {
-  // Generate a 1536-dimensional mock embedding (OpenAI's dimension size)
-  const embedding = Array(1536).fill(0).map(() => Math.random() * 2 - 1);
+export async function generateEmbedding(text: string): Promise<number[]> {
+  const azureApiKey = process.env.AZURE_OPENAI_API_KEY;
+  const azureEndpoint = process.env.AZURE_OPENAI_ENDPOINT;
+  const embeddingDeployment = process.env.AZURE_OPENAI_DEPLOYMENT_EMBEDDING || 'text-embedding-ada-002';
   
-  // Normalize the vector
-  const norm = Math.sqrt(embedding.reduce((sum, val) => sum + val * val, 0));
-  return embedding.map(val => val / norm);
+  if (!azureApiKey || !azureEndpoint) {
+    throw new Error('Azure OpenAI credentials not configured');
+  }
+  
+  try {
+    const openai = new OpenAI({
+      apiKey: azureApiKey,
+      baseURL: `${azureEndpoint}/openai/deployments/${embeddingDeployment}`,
+      defaultQuery: { 'api-version': '2023-05-15' },
+      defaultHeaders: { 'api-key': azureApiKey }
+    });
+    
+    const response = await openai.embeddings.create({
+      model: embeddingDeployment,
+      input: text
+    });
+    
+    return response.data[0].embedding;
+  } catch (error) {
+    console.error('Error generating embedding:', error);
+    throw error;
+  }
 }
