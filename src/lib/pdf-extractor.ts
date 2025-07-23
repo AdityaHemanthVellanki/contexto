@@ -1,8 +1,8 @@
 /**
  * PDF text extraction utilities that work in Node.js environment
  * PDF text extractor
- * Provides multiple approaches for extracting text from PDF files
- * with fallback mechanisms for different environments
+ * Provides direct text extraction from PDF files with no fallbacks
+ * for production-grade reliability
  */
 
 import { execSync } from 'child_process';
@@ -52,17 +52,17 @@ export async function extractText(buffer: ArrayBuffer): Promise<string> {
     // Track extraction attempts for better error reporting
     const errors: Error[] = [];
     
+    // No fallbacks - use pdf-parse directly and throw clear errors if it fails
+    console.log('Using pdf-parse for Node.js PDF extraction');
+    // Convert ArrayBuffer to Buffer for pdf-parse
+    const nodeBuffer = Buffer.from(buffer);
+    
+    // Verify buffer is valid
+    if (nodeBuffer.length === 0) {
+      throw new Error('Empty PDF buffer provided');
+    }
+    
     try {
-      // First attempt: Use pdf-parse in Node.js environments
-      console.log('Using pdf-parse for Node.js PDF extraction');
-      // Convert ArrayBuffer to Buffer for pdf-parse
-      const nodeBuffer = Buffer.from(buffer);
-      
-      // Verify buffer is valid
-      if (nodeBuffer.length === 0) {
-        throw new Error('Empty PDF buffer provided');
-      }
-      
       const data = await pdfParse(nodeBuffer);
       const extractedText = data.text || '';
       
@@ -73,29 +73,9 @@ export async function extractText(buffer: ArrayBuffer): Promise<string> {
         throw new Error('PDF parse returned empty text');
       }
     } catch (pdfParseError) {
-      // Log the error and save it for comprehensive error reporting
-      console.error('pdf-parse extraction failed:', pdfParseError);
-      errors.push(pdfParseError instanceof Error ? pdfParseError : new Error(String(pdfParseError)));
-      
-      // Second attempt: Fallback to basic extraction if pdf-parse fails
-      try {
-        console.log('Falling back to basic extraction method');
-        const basicText = await extractBasicMethod(buffer);
-        
-        // Check if we got any text from the basic method
-        if (basicText.trim().length > 0) {
-          return basicText;
-        } else {
-          throw new Error('Basic extraction returned empty text');
-        }
-      } catch (basicError) {
-        console.error('Basic PDF extraction failed:', basicError);
-        errors.push(basicError instanceof Error ? basicError : new Error(String(basicError)));
-        
-        // If both methods failed, provide a comprehensive error with all failure reasons
-        const errorMessages = errors.map(e => e.message).join('; ');
-        throw new Error(`All PDF extraction methods failed: ${errorMessages}`);
-      }
+      // Log the error and provide a clear error message
+      console.error('PDF extraction failed:', pdfParseError);
+      throw new Error(`PDF extraction failed: ${pdfParseError instanceof Error ? pdfParseError.message : 'Unknown error'}`);
     }
   } else {
     // Browser environment - use PDF.js

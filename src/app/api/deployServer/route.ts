@@ -249,7 +249,7 @@ async function deployToVercel(pipelineId: string, files: VercelFile[]): Promise<
   const deploymentName = `mcp-${pipelineId}`.toLowerCase().replace(/[^a-z0-9-]/g, '-');
 
   try {
-    // Create deployment
+    // Create deployment with minimal valid payload for an existing Vercel Project
     const deployResponse = await fetch('https://api.vercel.com/v13/deployments', {
       method: 'POST',
       headers: {
@@ -258,8 +258,18 @@ async function deployToVercel(pipelineId: string, files: VercelFile[]): Promise<
       },
       body: JSON.stringify({
         name: deploymentName,
-        // Removed projectId which was causing Vercel API error
+        // Include organization ID for team context
+        orgId: vercelOrgId,
+        // Correctly set target as production to ensure proper deployment
         target: 'production',
+        // Include projectSettings for new projects (required by Vercel API)
+        projectSettings: {
+          framework: 'other',
+          rootDirectory: '',
+          installCommand: 'npm ci',
+          buildCommand: 'npm run build',
+          outputDirectory: ''
+        },
         files: files.map(f => ({
           file: f.file,
           data: Buffer.from(f.data).toString('base64')

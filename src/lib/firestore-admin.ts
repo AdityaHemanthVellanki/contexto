@@ -1,68 +1,89 @@
-import { getFirestore, Firestore, Settings } from 'firebase-admin/firestore';
-import { getFirebaseAdmin } from './firebase-admin';
 import * as admin from 'firebase-admin';
-
-// Variable to track initialization status
-let firestoreInitialized = false;
-let firestoreInstance: Firestore;
+import { getFirestore, Firestore } from 'firebase-admin/firestore';
 
 /**
- * Get a Firestore instance with ignoreUndefinedProperties enabled
- * This prevents errors when undefined values are passed to Firestore
- * Uses a singleton pattern to ensure settings() is called only once
+ * Firestore admin singleton implementation
+ * This module initializes Firebase Admin and Firestore once at the module level
+ * and applies settings() only once to prevent "already initialized" errors
  */
-export async function getFirestoreAdmin(): Promise<Firestore> {
+
+// Global module-level variables for singleton pattern
+let _firestoreInstance: Firestore | undefined = undefined;
+
+/**
+ * Initialize Firebase Admin SDK if not already initialized
+ * This is safe to call multiple times as it checks for existing apps
+ */
+function initializeFirebaseAdmin(): void {
+  // Skip if already initialized
+  if (admin.apps.length > 0) {
+    return;
+  }
+  
   try {
-    // First ensure Firebase Admin is initialized with proper credentials
-    await getFirebaseAdmin();
-    
-    // If already initialized, return the instance after validation
-    if (firestoreInitialized && firestoreInstance) {
-      try {
-        // Quick validation to ensure the instance is still working
-        await firestoreInstance.collection('_validation').doc('test').get();
-        return firestoreInstance;
-      } catch (validationError) {
-        console.warn('Existing Firestore instance appears invalid, reinitializing...', validationError);
-        // Continue with reinitialization
-      }
+    admin.initializeApp({
+      credential: admin.credential.cert({
+        projectId: process.env.FIREBASE_PROJECT_ID,
+        clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+        privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\n/g, '\n') || ''
+      })
+    });
+    console.log('✅ Firebase Admin SDK initialized');
+  } catch (error) {
+    console.error('❌ Firebase Admin initialization error:', error instanceof Error ? error.message : String(error));
+  }
+}
+
+// Initialize Firebase Admin at module level
+initializeFirebaseAdmin();
+
+/**
+ * Get the Firestore instance - true singleton implementation
+ * This ensures settings() is only called once per Node.js process
+ */
+export function getFirestoreAdmin(): Firestore {
+  // Return existing instance if available
+  if (_firestoreInstance) {
+    return _firestoreInstance;
+  }
+  
+  try {
+    // Ensure Firebase is initialized
+    if (admin.apps.length === 0) {
+      initializeFirebaseAdmin();
     }
     
-    // Get Firestore instance directly
-    firestoreInstance = getFirestore();
+    // Get Firestore instance without applying settings yet
+    const db = admin.firestore();
     
-    // Apply settings - use a try/catch to handle the case where settings are already applied
+    // Only apply settings if this is the first time getting Firestore
+    // We use a try-catch because settings() will throw if already called
     try {
-      // Configure Firestore with production-ready settings
-      firestoreInstance.settings({
-        ignoreUndefinedProperties: true,
-        // Ensure we're connecting to the real Firestore (not emulator)
-        host: 'firestore.googleapis.com',
-        ssl: true
+      db.settings({
+        ignoreUndefinedProperties: true
       });
       console.log('✅ Firestore settings applied successfully');
     } catch (settingsError) {
-      // This is likely because settings were already applied
-      console.log('⚠️ Could not apply Firestore settings:', settingsError);
-      console.log('Continuing with existing settings');
+      // If settings were already applied, just log and continue
+      console.log('ℹ️ Firestore settings already applied (this is normal)');
     }
     
-    // Verify the connection is working
-    try {
-      // Test with a simple read operation first
-      await firestoreInstance.collection('_validation').listDocuments();
-      console.log('✅ Firestore connection verified');
-    } catch (connectionError) {
-      console.error('⚠️ Firestore connection verification failed:', connectionError);
-      console.log('This may indicate permission issues with your Firebase credentials');
-      // Continue anyway, as this might be a permissions issue with the test collection
-    }
+    // Store instance for future calls
+    _firestoreInstance = db;
+    console.log('✅ Firestore admin singleton initialized');
     
-    firestoreInitialized = true;
-    return firestoreInstance;
+    return db;
   } catch (error) {
-    console.error('❌ Error initializing Firestore admin:', error);
-    // Re-throw but with a more descriptive message
-    throw new Error(`Failed to initialize Firestore admin: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    console.error('❌ Firestore initialization error:', error instanceof Error ? error.message : String(error));
+    throw new Error(`Failed to initialize Firestore: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
+
+// Initialize the singleton at module level
+const firestoreDb = getFirestoreAdmin();
+
+/**
+ * Export the singleton Firestore instance directly
+ * This maintains backward compatibility with existing code
+ */
+export const firestore = firestoreDb;

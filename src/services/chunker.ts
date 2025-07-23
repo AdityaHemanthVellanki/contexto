@@ -143,8 +143,8 @@ function decodeTokens(tokens: number[], originalText: string): string {
   const startIdx = allTokens.indexOf(startTokenIdx);
   
   if (startIdx === -1) {
-    // Fallback: just decode the tokens directly
-    return tokens.map(t => String.fromCharCode(t)).join('');
+    // Hard failure if token not found
+    throw new Error('Failed to locate start token in original text');
   }
   
   // Find end position
@@ -154,10 +154,9 @@ function decodeTokens(tokens: number[], originalText: string): string {
   if (endIdx !== -1 && endIdx >= startIdx) {
     const tokenSubset = allTokens.slice(startIdx, endIdx + 1);
     // Now map these tokens back to the original text
-    // This is a simplification - a real implementation would be more complex
     return tokenSubset.map(t => String.fromCharCode(t)).join('');
   }
   
-  // Fallback: use a simple decoding approach
-  return tokens.map(t => String.fromCharCode(t)).join('');
+  // Hard failure if end token not found
+  throw new Error('Failed to locate end token in original text');
 }

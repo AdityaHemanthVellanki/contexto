@@ -203,52 +203,13 @@ export async function POST(request: NextRequest) {
       }
     }
     
-    // If all deployments failed, provide a fallback response
+    // No fallbacks - if all deployments failed, throw an error
     if (!success || !completionResponse) {
-      console.log('All Azure OpenAI deployments failed, using fallback response');
+      console.error('All Azure OpenAI deployments failed');
+      console.error('Deployments tried:', deploymentOptions);
       
-      // Analyze the context to provide a helpful fallback response
-      let contextSummary = "No relevant information found";
-      
-      if (context && typeof context === 'string' && context.trim().length > 0) {
-        // Simple extraction of key information from context
-        const lines = context.split('\n').filter((line: string) => line.trim().length > 0);
-        if (lines.length > 0) {
-          // Get first few lines as a summary
-          contextSummary = lines.slice(0, Math.min(3, lines.length)).join('\n');
-          
-          if (lines.length > 3) {
-            contextSummary += '\n[Additional relevant information available]';
-          }
-        }
-      }
-      
-      // Create a more informative fallback response
-      let responseContent = "";
-      
-      if (context && typeof context === 'string' && context.trim()) {
-        // If we have context, provide a helpful response based on the context
-        responseContent = `Based on the information I found about "${prompt}", here are the relevant details:\n\n${contextSummary}`;
-      } else {
-        // If we don't have context, explain the technical issue but in a way that seems like a normal response
-        responseContent = `I don't have specific information about "${prompt}" in the document you provided. If you have more specific questions about the content, I'd be happy to try answering those.`;
-      }
-      
-      // Include debugging information in console but not in the response
-      console.log('API connection issue - deployments tried:', deploymentOptions);
-      
-      completionResponse = {
-        choices: [{
-          message: {
-            content: responseContent
-          }
-        }],
-        usage: {
-          prompt_tokens: context && typeof context === 'string' ? context.split(' ').length : 0,
-          completion_tokens: responseContent.split(' ').length,
-          total_tokens: (context && typeof context === 'string' ? context.split(' ').length : 0) + responseContent.split(' ').length
-        }
-      };
+      // Throw a clear error to ensure failures surface immediately
+      throw new Error('Azure OpenAI query failed: All configured deployments failed to respond');
     }
     
     const endTime = Date.now();
@@ -262,7 +223,7 @@ export async function POST(request: NextRequest) {
       completionTokens: completionResponse.usage?.completion_tokens || 0,
       totalTokens: completionResponse.usage?.total_tokens || 0,
       latencyMs: endTime - startTime,
-      deploymentUsed: deploymentUsed || 'fallback'
+      deploymentUsed: deploymentUsed || 'unknown'
     };
     
     // Log completion for debugging

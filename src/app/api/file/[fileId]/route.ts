@@ -150,74 +150,9 @@ export async function GET(
       }
     }
     
-    // Fallback to Firebase Storage if R2 access failed
-    console.log('R2 access failed, trying Firebase Storage as fallback');
-    
-    const storagePaths = [
-      `files/${fileId}`,
-      `uploads/${fileId}`,
-      `${fileId}`
-    ];
-    
-    for (const storagePath of storagePaths) {
-      try {
-        console.log(`Trying Firebase Storage with path: ${storagePath}`);
-        
-        // Try to get a signed URL from Firebase Storage
-        const [signedUrl] = await storage.bucket().file(storagePath).getSignedUrl({
-          action: 'read',
-          expires: Date.now() + 5 * 60 * 1000, // 5 minutes
-        });
-        
-        if (signedUrl) {
-          console.log(`Got Firebase Storage signed URL: ${signedUrl.substring(0, 50)}...`);
-          
-          // Return a redirect to the signed URL
-          return NextResponse.redirect(signedUrl);
-        }
-      } catch (fbError) {
-        console.log(`Firebase Storage attempt with path ${storagePath} failed:`, 
-          fbError instanceof Error ? fbError.message : 'Unknown error');
-        // Continue to try next path option
-      }
-    }
-    
-    // If all attempts failed, try to download directly through Firebase
-    console.log('Attempting direct Firebase Storage download');
-    
-    for (const storagePath of storagePaths) {
-      try {
-        const fileBuffer = await new Promise<Buffer>((resolve, reject) => {
-          const fileStream = storage.bucket().file(storagePath).createReadStream();
-          const chunks: Buffer[] = [];
-          
-          fileStream.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
-          fileStream.on('error', (err) => reject(err));
-          fileStream.on('end', () => resolve(Buffer.concat(chunks)));
-        });
-        
-        if (fileBuffer && fileBuffer.length > 0) {
-          console.log(`Successfully downloaded from Firebase Storage at path: ${storagePath}`);
-          
-          return new NextResponse(fileBuffer, {
-            headers: {
-              'Content-Type': fileData.fileType || 'application/octet-stream',
-              'Content-Disposition': `attachment; filename="${fileData.fileName || 'download'}"`
-            }
-          });
-        }
-      } catch (fbError) {
-        console.log(`Direct Firebase Storage download with path ${storagePath} failed:`, 
-          fbError instanceof Error ? fbError.message : 'Unknown error');
-      }
-    }
-    
-    // If all download attempts failed
-    console.error('All download attempts failed for file:', fileId);
-    return NextResponse.json({ 
-      message: 'Could not retrieve file from storage',
-      fileId 
-    }, { status: 404 });
+    // No fallbacks - if R2 access failed, throw a clear error
+    console.error('R2 access failed - no fallback mechanisms allowed');
+    throw new Error(`File access failed: Could not retrieve file ${fileId} from R2 storage. Ensure R2 is properly configured.`);
     
   } catch (error) {
     console.error('Error fetching file:', error);

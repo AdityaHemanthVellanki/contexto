@@ -20,7 +20,7 @@ function getVectorStore(sizeBytes: number, purpose: string): { type: string; pri
   } else if (purpose.toLowerCase().includes('analytics') || purpose.toLowerCase().includes('search')) {
     return { type: 'supabase', priority: 3 }; // Good for analytics workloads
   } else {
-    return { type: 'firestore', priority: 4 }; // Fallback for simple use cases
+    return { type: 'firestore', priority: 4 }; // Good for simple use cases and small datasets
   }
 }
 
@@ -174,6 +174,38 @@ async function createSupabaseTable(pipelineId: string): Promise<string> {
   }
 }
 
+// Firestore collection creation
+async function createFirestoreCollection(pipelineId: string): Promise<string> {
+  try {
+    // Get Firestore admin instance
+    const db = await getFirestoreAdmin();
+    
+    // Collection path for this pipeline's vectors
+    const collectionPath = `embeddings/${pipelineId}/chunks`;
+    
+    // No need to explicitly create the collection in Firestore
+    // Collections are created automatically when documents are added
+    // Just verify we can access Firestore
+    
+    // Add a metadata document to mark this collection as created
+    await db.collection('embeddings').doc(pipelineId).set({
+      createdAt: new Date(),
+      status: 'provisioned',
+      type: 'firestore',
+      dimension: 1536
+    }, { merge: true });
+    
+    console.log(`Firestore vector store provisioned for pipeline ${pipelineId}`);
+    
+    // Return the collection path as the endpoint
+    return collectionPath;
+  } catch (error) {
+    console.error('Firestore vector store provisioning error:', error);
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    throw new Error(`Failed to provision Firestore vector store: ${errorMessage}`);
+  }
+}
+
 export async function POST(request: NextRequest) {
   try {
     // Apply rate limiting
@@ -254,18 +286,19 @@ export async function POST(request: NextRequest) {
         case 'supabase':
           vectorStoreEndpoint = await createSupabaseTable(pipelineId);
           break;
+        case 'firestore':
+          vectorStoreEndpoint = await createFirestoreCollection(pipelineId);
+          break;
         default:
-          // Firestore fallback - no provisioning needed
-          vectorStoreEndpoint = `firestore://contexto-vectors/${userId}/${pipelineId}`;
-          storeType = 'firestore';
+          // No fallbacks - throw error for unknown vector store type
+          throw new Error(`Unsupported vector store type: ${vectorStoreConfig.type}. Configure a supported vector store.`);
       }
     } catch (error) {
       console.error(`Vector store deployment failed for ${vectorStoreConfig.type}:`, error);
       
-      // Fallback to Firestore
-      vectorStoreEndpoint = `firestore://contexto-vectors/${userId}/${pipelineId}`;
-      storeType = 'firestore';
-      console.log('Falling back to Firestore vector store');
+      // No fallbacks - propagate the error
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      throw new Error(`Vector store deployment failed: ${errorMessage}. Ensure proper configuration for ${vectorStoreConfig.type}.`);
     }
 
     // Save deployment metadata

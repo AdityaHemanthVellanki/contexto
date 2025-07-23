@@ -1,7 +1,23 @@
 import { getFirestore } from 'firebase-admin/firestore';
 import { getAuth, getFirebaseAdmin } from '@/lib/firebase-admin';
 import { r2, R2_BUCKET } from '@/lib/r2';
-import { GetObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
+
+/**
+ * Type guard to check if an unknown value is an Error
+ */
+function isError(error: unknown): error is Error {
+  return error instanceof Error;
+}
+
+/**
+ * Helper function to safely extract error messages from unknown error types
+ */
+function getErrorMessage(error: unknown): string {
+  if (isError(error)) return error.message;
+  return String(error) || 'Unknown error';
+}
+
 import { Buffer } from 'buffer';
 
 interface FileData {
@@ -28,7 +44,7 @@ async function extractPdfText(buffer: ArrayBuffer): Promise<string> {
     // Extract text using pdf-parse library
     const { extractText } = await import('../lib/pdf-extractor');
     return await extractText(buffer);
-  } catch (error) {
+  } catch (error: unknown) {
     console.error('PDF extraction failed:', error);
     throw new Error(`PDF extraction failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
@@ -63,7 +79,7 @@ export async function runDataSource(fileId: string, userIdToken: string): Promis
   
   try {
     // 1. Verify Firebase ID token with force refresh to ensure valid token
-    const auth = getAuth();
+    const auth = await Promise.resolve(getAuth());
     let decodedToken;
     
     try {
@@ -300,12 +316,8 @@ export async function runDataSource(fileId: string, userIdToken: string): Promis
         }
       }
       
-      // If we reach here, all normal methods failed - try one last resort
-      // We need to ensure buffer is initialized before further attempts
-      if (!buffer) {
-        console.warn('Buffer was not initialized in previous attempts, creating empty buffer');
-        buffer = new ArrayBuffer(0); // Initialize with empty buffer
-      }
+      // If we reach here, normal methods failed - throw an error
+      throw new Error('Failed to download file: Primary download methods failed');
       
       if (isCloudflareR2) {
         // For R2 files, access directly through Cloudflare R2 S3 client
@@ -370,8 +382,12 @@ export async function runDataSource(fileId: string, userIdToken: string): Promis
                 console.log(`Successfully found file with key: ${currentKey}`);
                 break;
               }
-            } catch (keyError) {
-              console.warn(`Key ${currentKey} not found or access error:`, keyError instanceof Error ? keyError.message : 'Unknown error');
+            } catch (error: unknown) {
+              // Instead of just logging a warning, we should throw an error for this key attempt
+              // This ensures strict error propagation but allows trying other keys
+              const errorMessage = getErrorMessage(error);
+              console.error(`Key ${currentKey} not found or access error:`, errorMessage);
+              // We don't throw here to allow trying other keys, but we don't silently continue either
             }
           }
           
@@ -433,185 +449,50 @@ export async function runDataSource(fileId: string, userIdToken: string): Promis
                 fileBuffer.byteOffset, 
                 fileBuffer.byteOffset + fileBuffer.byteLength
               ) as ArrayBuffer;
-            } catch (streamError) {
-              console.error('Error processing R2 stream:', streamError);
-              throw new Error(`Failed to process R2 stream: ${streamError instanceof Error ? streamError.message : 'Unknown error'}`);
+            } catch (error: unknown) {
+              const errorMessage = getErrorMessage(error);
+              console.error('Error processing R2 stream:', errorMessage);
+              // Ensure strict error propagation with detailed error message
+              throw new Error(`Failed to process R2 stream: ${errorMessage}`);
             }
             console.log('Successfully downloaded file from Cloudflare R2');
             
             // Extract text from the buffer and return it immediately
             text = await extractTextFromBuffer(buffer, fileType);
-            return text; // Exit the function with the text after successful R2 download
+            return text;
           } else {
-            console.log('R2 response received but no body');
-            console.log('No file found in Cloudflare R2 with any key format');
+            // Hard failure if R2 response has no body
+            throw new Error('R2 response received but no body');
           }
         } catch (r2Error) {
-          console.error('Error accessing file through Cloudflare R2:', r2Error);
-        }
-        
-        // Try Firebase Storage as a fallback
-        console.log('Attempting Firebase Storage access as fallback');
-        
-        try {
-          // Get the file reference from Firebase Storage
-          const bucket = getFirebaseAdmin().storage().bucket();
-          const fileRef = bucket.file(`uploads/${fileId}`);
-          
-          // Check if the file exists in Firebase Storage
-          const [exists] = await fileRef.exists();
-          
-          if (exists) {
-            console.log('File exists in Firebase Storage, downloading directly');
-            // Download the file directly using the Firebase Admin SDK
-            const [fileContents] = await fileRef.download();
-            // Convert to proper ArrayBuffer type to satisfy TypeScript
-            buffer = Buffer.from(fileContents).buffer.slice(
-              Buffer.from(fileContents).byteOffset,
-              Buffer.from(fileContents).byteOffset + Buffer.from(fileContents).length
-            );
-            text = await extractTextFromBuffer(buffer, fileType);
-            return text;
-          } else {
-            console.warn('File not found in Firebase Storage fallback');
-            
-            // Alternative direct access using different paths
-            const altPaths = [
-              `uploads/${fileId}`,
-              `${fileData.userId}/uploads/${fileId}`,
-              `contexto-uploads/${fileData.userId}/uploads/${fileId}`
-            ];
-            
-            // Try each alternative path
-            for (const altPath of altPaths) {
-              try {
-                console.log(`Trying alternative path: ${altPath}`);
-                const altFileRef = bucket.file(altPath);
-                const [altExists] = await altFileRef.exists();
-                
-                if (altExists) {
-                  console.log(`File found at alternative path: ${altPath}`);
-                  const [altContents] = await altFileRef.download();
-                  // Convert to proper ArrayBuffer type to satisfy TypeScript
-                  buffer = Buffer.from(altContents).buffer.slice(
-                    Buffer.from(altContents).byteOffset,
-                    Buffer.from(altContents).byteOffset + Buffer.from(altContents).length
-                  );
-                  text = await extractTextFromBuffer(buffer, fileType);
-                  return text;
-                }
-              } catch (altError) {
-                console.warn(`Error with alternative path ${altPath}:`, altError);
-              }
-            }
-          }
-        } catch (firebaseError) {
-          console.error('Error accessing file through Firebase Storage:', firebaseError);
-        }
-        
-        // Last resort - try to access via our API endpoint
-        console.log('Attempting API access as last resort');
-        
-        try {
-          // Make sure we use a fully qualified URL for server-side fetch
-          let apiUrl;
-          
-          try {
-            // Safely construct the URL - this avoids the Invalid URL error
-            const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || 
-                          (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 
-                          'http://localhost:3000');
-            
-            apiUrl = new URL(`/api/file/${fileId}`, baseUrl);
-            apiUrl.searchParams.append('download', 'true');
-            console.log(`Making server-side API request to: ${apiUrl.toString()}`);
-          } catch (urlError) {
-            console.error('Error constructing URL:', urlError);
-            // Fallback to a simple string URL if URL constructor fails
-            apiUrl = new URL(`http://localhost:3000/api/file/${fileId}?download=true`);
-          }
-          
-          // Server-to-server communication within the same app doesn't need token refresh
-          // Instead, let's create a special internal authentication approach
-          
-          // We'll use both the original token and add a server-side validation
-          const serverSecret = process.env.SERVER_AUTH_SECRET || 'internal-server-auth';
-          const timestamp = Date.now().toString();
-          const serverAuthHeader = `${serverSecret}:${timestamp}:${uid}`;
-          
-          console.log('Using server-to-server authentication for API call');
-          
-          const apiResponse = await fetch(apiUrl.toString(), {
-            method: 'GET',
-            headers: {
-              // Keep the original user token for user-level authorization
-              'Authorization': `Bearer ${userIdToken}`,
-              // Add our server auth header to indicate this is a legitimate server-to-server call
-              'X-Server-Auth': serverAuthHeader,
-              'Content-Type': 'application/json'
-            }
-          });
-          
-          if (apiResponse.ok) {
-            console.log('Successfully downloaded file through API');
-            buffer = await apiResponse.arrayBuffer();
-            text = await extractTextFromBuffer(buffer, fileType);
-            return text;
-          } else {
-            console.warn(`API download failed: ${apiResponse.status} ${apiResponse.statusText}`);
-          }
-        } catch (apiError) {
-          console.error('Error with API download:', apiError);
-        }
-      }
-      
-      // If absolutely everything failed, throw a comprehensive error with detailed information
-      console.error('CRITICAL: All download methods failed for file:', { 
-        fileId, 
-        userId: uid,
-        hasFileUrl: !!fileData.fileUrl,
-        hasDownloadUrl: !!fileData.downloadUrl,
-        fileType: fileData.fileType
-      });
-      
-      // Check if we have any R2 configuration issues
-      const r2ConfigIssue = !process.env.CF_R2_ACCESS_KEY_ID || 
-                          !process.env.CF_R2_SECRET_ACCESS_KEY || 
-                          !process.env.CF_R2_ENDPOINT || 
-                          !R2_BUCKET;
-      
-      if (r2ConfigIssue) {
-        console.error('R2 configuration appears to be incomplete');
-      }
-      
-      throw new Error(`Failed to download file: All download methods failed. Please check server logs for details.`);
-    
-    } catch (downloadError: unknown) {
-      console.error('Error downloading file:', downloadError);
-      throw new Error(`Failed to download file: ${downloadError instanceof Error ? downloadError.message : 'Unknown error'}`);
     }
+  }
+} catch (fetchError) {
+  console.warn(`Fetch error with primary URL:`, fetchError);
+}
+
+// If primary URL fails and we have a downloadUrl, try that
+if (downloadUrl) {
+  console.log(`Trying alternative download URL: ${downloadUrl}`); // We know downloadUrl exists inside this block
+  try {
+    // We know downloadUrl is a string because we're inside the downloadUrl condition
+    const altResponse = await fetch(downloadUrl!);
     
-    // If we got here, we need to extract the text
-    try {
-      // Make sure buffer exists and is not empty before extraction
-      if (!buffer || buffer.byteLength === 0) {
-        throw new Error('No file content available for text extraction');
-      }
+    if (altResponse.ok) {
+      buffer = await altResponse.arrayBuffer();
       text = await extractTextFromBuffer(buffer, fileType);
-    } catch (error) {
-      // TypeScript safe error handling
-      const extractionError = error as Error;
-      console.error('Text extraction error:', extractionError);
-      throw new Error(`Text extraction failed: ${extractionError.message || 'Unknown error'}`);
+      return text; // Early return with extracted text
+    } else {
+      console.warn(`Alternative URL failed with status: ${altResponse.status} ${altResponse.statusText}`);
     }
-    
-    if (!text || text.trim().length === 0) {
-      throw new Error('No text content was extracted from the file');
-    }
-    
-    // 5. Return extracted text
-    return text;
-  } catch (e) {
+  } catch (altFetchError) {
+    console.warn(`Fetch error with alternative URL:`, altFetchError);
+  }
+}
+
+// If we reach here, normal methods failed - throw an error
+throw new Error('Failed to download file: Primary download methods failed');
+  } catch (e: unknown) {
     // 6. Error handling
     if (e instanceof Error) {
       throw new Error(`DataSource failed: ${e.message}`);

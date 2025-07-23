@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
+import { v4 as uuidv4 } from 'uuid';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '@/hooks/useAuth';
 import { getAuth } from 'firebase/auth';
@@ -80,7 +81,7 @@ export default function SimpleChatWindow({ chatId }: SimpleChatWindowProps) {
       // TODO: Load messages from Firestore for this specific chat
       // For now, just show welcome message
       setMessages([{
-        id: '1',
+        id: uuidv4(),
         type: 'ai',
         content: WELCOME_MESSAGE,
         timestamp: new Date()
@@ -88,7 +89,7 @@ export default function SimpleChatWindow({ chatId }: SimpleChatWindowProps) {
     } else if (messages.length === 0) {
       // Add welcome message on mount for new chats
       setMessages([{
-        id: '1',
+        id: uuidv4(),
         type: 'ai',
         content: WELCOME_MESSAGE,
         timestamp: new Date()
@@ -173,7 +174,7 @@ export default function SimpleChatWindow({ chatId }: SimpleChatWindowProps) {
 
   const addMessage = (type: 'ai' | 'user', content: string, metadata?: Message['metadata']) => {
     const newMessage: Message = {
-      id: Date.now().toString(),
+      id: uuidv4(), // Generate a unique UUID instead of using timestamp
       type,
       content,
       timestamp: new Date(),

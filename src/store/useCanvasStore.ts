@@ -258,12 +258,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       });
     } catch (error) {
       console.error('Failed to load generated pipeline:', error);
-      // Fallback to empty canvas on error
-      set({
-        nodes: [],
-        edges: [],
-        selectedNode: null
-      });
+      // No fallbacks - propagate the error
+      throw new Error(`Pipeline loading failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
 }));

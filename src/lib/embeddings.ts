@@ -28,13 +28,12 @@ export async function createEmbeddings(texts: string[], pipelineId?: string): Pr
     console.log(`Creating embeddings for pipeline: ${pipelineId}`);
   }
   
-  // Use environment variable for embedding deployment name with a fallback
-  let embeddingDeployment = process.env.AZURE_OPENAI_DEPLOYMENT_EMBEDDING || '';
+  // Use environment variable for embedding deployment name - no fallbacks
+  const embeddingDeployment = process.env.AZURE_OPENAI_DEPLOYMENT_EMBEDDING;
   
-  // If no deployment name is set in environment variables, use the known name from the screenshot
+  // Require proper configuration - no fallbacks
   if (!embeddingDeployment) {
-    embeddingDeployment = 'text-embedding-ada-002';
-    console.log('No embedding deployment name found in environment variables. Using fallback:', embeddingDeployment);
+    throw new Error('Azure OpenAI embedding deployment name not configured. Set AZURE_OPENAI_DEPLOYMENT_EMBEDDING environment variable.');
   }
   
   console.log(`Creating embeddings using deployment: ${embeddingDeployment}`);
@@ -130,24 +129,14 @@ export async function createEmbeddings(texts: string[], pipelineId?: string): Pr
         console.log(`Successfully created ${batchEmbeddings.length} embeddings`);
       } catch (error) {
         console.error('Error processing batch:', error);
-        
-        // Generate fallback embeddings for this batch
-        const dummyEmbeddings = batchTexts.map(() => ({
-          embedding: Array(1536).fill(0).map(() => (Math.random() - 0.5) * 0.01)
-        }));
-        embeddings.push(...dummyEmbeddings);
-        console.log(`Using fallback random embeddings for batch ${i / batchSize + 1} due to error`);
+        throw error;
       }
     }
 
     return embeddings as EmbeddingResult[];
   } catch (error) {
     console.error('Failed to create embeddings:', error);
-    
-    // Return fallback embeddings (random noise) instead of throwing
-    return texts.map(() => ({
-      embedding: Array(1536).fill(0).map(() => (Math.random() - 0.5) * 0.01)
-    })) as EmbeddingResult[];
+    throw new Error(`Failed to create embeddings: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
 }
 
@@ -167,7 +156,7 @@ export async function findSimilarChunks(queryText: string, fileId: string, limit
     
     if (!queryEmbeddingResult || queryEmbeddingResult.length === 0 || !queryEmbeddingResult[0].embedding) {
       console.error('Failed to create query embedding');
-      return simulateSearchResults(fileId, limit); // Use fallback
+      throw new Error('Failed to create query embedding for similarity search');
     }
     
     const queryEmbedding = queryEmbeddingResult[0].embedding;
@@ -216,8 +205,7 @@ export async function findSimilarChunks(queryText: string, fileId: string, limit
     
   } catch (error) {
     console.error('Error finding similar chunks:', error);
-    // Return fallback results instead of throwing
-    return simulateSearchResults(fileId, limit);
+    throw new Error(`Failed to find similar chunks: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
 }
 
@@ -230,53 +218,36 @@ export async function findSimilarChunks(queryText: string, fileId: string, limit
 function calculateCosineSimilarity(vecA: number[], vecB: number[] | EmbeddingResult): number {
   // Handle embedding object format
   const vectorB = Array.isArray(vecB) ? vecB : vecB.embedding;
-  try {
-    // Handle invalid inputs
-    if (!vecA || !vecB || !Array.isArray(vecA)) {
-      return 0;
-    }
-    
-    // Handle different dimensionality
-    const length = Math.min(vecA.length, vectorB.length);
-    if (length === 0) return 0;
-    
-    let dotProduct = 0;
-    let normA = 0;
-    let normB = 0;
-    
-    for (let i = 0; i < length; i++) {
-      dotProduct += vecA[i] * vectorB[i];
-      normA += vecA[i] * vecA[i];
-      normB += vectorB[i] * vectorB[i];
-    }
-    
-    if (normA === 0 || normB === 0) return 0;
-    
-    return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
-  } catch (error) {
-    console.error('Error calculating similarity:', error);
-    return 0;
+  // Handle invalid inputs - no fallbacks, throw errors for invalid data
+  if (!vecA || !vectorB) {
+    throw new Error('Invalid vectors provided for similarity calculation');
   }
+  
+  if (!Array.isArray(vecA)) {
+    throw new Error('First vector must be an array');
+  }
+  
+  // Handle different dimensionality
+  const length = Math.min(vecA.length, vectorB.length);
+  if (length === 0) {
+    throw new Error('Vectors cannot have zero length');
+  }
+  
+  let dotProduct = 0;
+  let normA = 0;
+  let normB = 0;
+  
+  for (let i = 0; i < length; i++) {
+    dotProduct += vecA[i] * vectorB[i];
+    normA += vecA[i] * vecA[i];
+    normB += vectorB[i] * vectorB[i];
+  }
+  
+  if (normA === 0 || normB === 0) {
+    throw new Error('Vectors cannot have zero magnitude');
+  }
+  
+  return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
 }
 
-/**
- * Creates simulated search results when real search fails
- * @param fileId The file ID to simulate results for
- * @param limit Maximum number of results to return
- * @returns Array of simulated chunks with similarity scores
- */
-function simulateSearchResults(fileId: string, limit: number = 5): any[] {
-  console.log('Using simulated search results for file:', fileId);
-  
-  // Create some simulated results to prevent UI from breaking
-  return Array(limit).fill(null).map((_, i) => ({
-    id: `simulated-${i}`,
-    fileId,
-    content: `This is a simulated result ${i+1}. The actual search functionality requires a working Azure OpenAI connection with the correct deployment name.`,
-    pageNum: i + 1,
-    similarity: 0.9 - (i * 0.1), // Decreasing similarity
-    metadata: {
-      simulated: true
-    }
-  }));
-}
+// No fallback functions - all errors are thrown directly to ensure proper error handling

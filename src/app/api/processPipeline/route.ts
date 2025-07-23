@@ -6,7 +6,7 @@ import { FieldValue } from 'firebase-admin/firestore';
 import { rateLimit } from '@/lib/rate-limiter-memory';
 import { authenticateRequest } from '@/lib/api-auth';
 import { createEmbeddings } from '@/lib/embeddings';
-import { generatePipelineFromPrompt } from '@/utils/azure-openai';
+import { generateChatResponse } from '@/services/azure-openai-server';
 import { r2, R2_BUCKET } from '@/lib/r2';
 import { GetObjectCommand } from '@aws-sdk/client-s3';
 import { processFile } from '@/lib/fileProcessor';
@@ -45,9 +45,9 @@ async function generatePipelineResponse(pipelineInfo: {
     in a way that's helpful to the user who wants to use this for their stated purpose.
     `;
     
-    // Generate pipeline explanation using OpenAI
-    const response = await generatePipelineFromPrompt(prompt);
-    return response.explanation || `Pipeline processing complete for ${pipelineInfo.fileName}. Created ${pipelineInfo.chunksCount} chunks and indexed them in ${pipelineInfo.vectorStore}.`;
+    // Generate pipeline explanation using Azure OpenAI server-side implementation
+    const explanation = await generateChatResponse(prompt);
+    return explanation || `Pipeline processing complete for ${pipelineInfo.fileName}. Created ${pipelineInfo.chunksCount} chunks and indexed them in ${pipelineInfo.vectorStore}.`;
   } catch (error) {
     console.error('Error generating pipeline response:', error);
     // Fallback to a basic response without AI generation if something goes wrong

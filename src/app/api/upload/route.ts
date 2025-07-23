@@ -99,7 +99,7 @@ async function handleBinaryUpload(request: NextRequest, userId: string): Promise
           Bucket: R2_BUCKET,
           Key: key,
           Body: buffer,
-          ContentType: mimetype || 'application/octet-stream' // Provide fallback content type
+          ContentType: mimetype || (() => { throw new Error('Missing content type for file upload'); })()
         })
       );
       
@@ -326,7 +326,7 @@ export async function POST(request: NextRequest) {
           Bucket: R2_BUCKET,
           Key: key,
           Body: buffer,
-          ContentType: file.type || 'application/octet-stream' // Fallback content type
+          ContentType: file.type || (() => { throw new Error('Missing content type for file upload'); })()
         });
         
         await r2.send(uploadCommand);
@@ -351,7 +351,7 @@ export async function POST(request: NextRequest) {
           userId,
           fileId: uploadId,
           fileName: file.name,
-          fileType: file.type || 'application/octet-stream',
+          fileType: file.type || (() => { throw new Error('Missing content type for Firestore metadata'); })(),
           fileSize: file.size,
           fileUrl, 
           r2Key: key,
