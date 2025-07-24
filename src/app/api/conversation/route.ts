@@ -1,30 +1,22 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { ConversationServerService } from '@/services/conversation-server';
-import { getAuth } from '@/lib/firebase-admin';
-import { getFirestoreAdmin } from '@/lib/firestore-admin';
+// Import directly from our shared Firebase Admin initialization module
+import { initializeFirebaseAdmin, getFirebaseAuth } from '@/lib/firebase-admin-init';
 
-// Ensure Firebase is properly initialized before handling requests
-// This is done outside the request handlers to avoid initialization on every request
-let initPromise: Promise<void> | null = null;
-
-// Initialize Firebase Admin SDK with proper error handling
-async function ensureFirebaseInitialized() {
-  if (!initPromise) {
-    initPromise = (async () => {
-      try {
-        // Initialize Firebase and Firestore with proper settings
-        await getFirestoreAdmin();
-        console.log('✅ Firebase initialized successfully for conversation API');
-      } catch (error) {
-        console.error('❌ Firebase initialization failed in conversation API:', error);
-        // Reset the promise so we can try again on the next request
-        initPromise = null;
-        throw error;
-      }
-    })();
-  }
-  return initPromise;
+// Initialize Firebase Admin SDK at module load time
+// This ensures Firebase is ready before any requests are processed
+try {
+  // This will initialize Firebase Admin if not already initialized
+  initializeFirebaseAdmin();
+  console.log('✅ Firebase initialized successfully for conversation API');
+} catch (error) {
+  console.error('❌ Firebase initialization failed in conversation API:', 
+    error instanceof Error ? error.message : String(error));
+  // The error will be handled when the API route is called - no fallbacks
 }
+
+// Firebase is already initialized at module level above
+// No need for additional initialization here
 
 // Define a type for Firebase errors
 type FirebaseError = {
@@ -53,7 +45,8 @@ function logDetailedError(error: unknown, context: string) {
 // Helper function to verify Firestore connection
 async function verifyFirestoreConnection() {
   try {
-    const db = await getFirestoreAdmin();
+    // Get the Firestore instance directly from our shared module
+    const db = initializeFirebaseAdmin();
     // Try a simple operation to verify connection
     const testDoc = await db.collection('_connection_test').doc('test').get();
     return { connected: true };
@@ -65,8 +58,7 @@ async function verifyFirestoreConnection() {
 
 export async function POST(request: NextRequest) {
   try {
-    // Ensure Firebase is initialized before processing the request
-    await ensureFirebaseInitialized();
+    // Firebase is already initialized at module level
     
     // Verify authentication
     const authHeader = request.headers.get('authorization');
@@ -88,8 +80,10 @@ export async function POST(request: NextRequest) {
     // Verify the Firebase ID token
     let decodedToken;
     try {
-      // First get the Auth instance, then verify the token
-      const auth = await getAuth();
+      // Ensure Firebase is initialized first
+      // Firebase is already initialized at module level
+      // Get the Auth instance directly from Firebase Admin
+      const auth = getFirebaseAuth();
       decodedToken = await auth.verifyIdToken(token);
     } catch (error) {
       logDetailedError(error, 'token verification');
@@ -205,7 +199,7 @@ export async function POST(request: NextRequest) {
 export async function GET(request: NextRequest) {
   try {
     // Ensure Firebase is initialized before processing the request
-    await ensureFirebaseInitialized();
+    // Firebase is already initialized at module level
     
     // Verify authentication
     const authHeader = request.headers.get('authorization');
@@ -218,8 +212,10 @@ export async function GET(request: NextRequest) {
     // Verify the Firebase ID token
     let decodedToken;
     try {
-      // First get the Auth instance, then verify the token
-      const auth = await getAuth();
+      // Ensure Firebase is initialized first
+      // Firebase is already initialized at module level
+      // Get the Auth instance directly from Firebase Admin
+      const auth = getFirebaseAuth();
       decodedToken = await auth.verifyIdToken(token);
     } catch (error: unknown) {
       logDetailedError(error, 'GET token verification');

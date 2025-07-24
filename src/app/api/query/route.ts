@@ -1,12 +1,22 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getFirestore } from '@/lib/firebase-admin';
+import { initializeFirebaseAdmin } from '@/lib/firebase-admin-init';
+import { getFirebaseAuth } from '@/lib/firebase-admin-init';
 import { Timestamp } from 'firebase-admin/firestore';
 import { authenticateRequest } from '@/lib/api-auth';
 import { findSimilarChunks } from '@/lib/embeddings';
 import { rateLimit } from '@/lib/rate-limiter-memory';
 
-// Initialize Firebase Admin services
-// Note: We need to get the Firestore instance inside the request handler to properly await it
+// Initialize Firebase Admin SDK at module load time
+// This ensures Firebase is ready before any requests are processed
+try {
+  // This will initialize Firebase Admin if not already initialized
+  initializeFirebaseAdmin();
+  console.log('✅ Firebase initialized successfully for query API');
+} catch (error) {
+  console.error('❌ Firebase initialization failed in query API:', 
+    error instanceof Error ? error.message : String(error));
+  // The error will be handled when the API route is called - no fallbacks
+}
 
 // Azure OpenAI configuration
 const azureApiKey = process.env.AZURE_OPENAI_API_KEY || '';
@@ -14,8 +24,8 @@ const azureEndpoint = process.env.AZURE_OPENAI_ENDPOINT || '';
 
 export async function POST(request: NextRequest) {
   try {
-    // Initialize Firestore inside the handler to properly await it
-    const db = await getFirestore();
+    // Get Firestore instance using our improved initialization approach
+    const db = initializeFirebaseAdmin();
     
     // Apply rate limiting first
     const rateLimitResult = await rateLimit(request, {

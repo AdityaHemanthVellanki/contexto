@@ -1,7 +1,19 @@
 import { NextResponse } from 'next/server';
-import { getAuth, getFirestore } from '@/lib/firebase-admin';
+import { initializeFirebaseAdmin, getFirebaseAuth } from '@/lib/firebase-admin-init';
 import { executePipeline } from '@/services/executePipeline';
 import { FieldValue } from 'firebase-admin/firestore';
+
+// Initialize Firebase Admin SDK at module load time
+// This ensures Firebase is ready before any requests are processed
+try {
+  // This will initialize Firebase Admin if not already initialized
+  initializeFirebaseAdmin();
+  console.log('✅ Firebase initialized successfully for process API');
+} catch (error) {
+  console.error('❌ Firebase initialization failed in process API:', 
+    error instanceof Error ? error.message : String(error));
+  // The error will be handled when the API route is called - no fallbacks
+}
 
 /**
  * Process route - Handles file processing requests via the MCP pipeline
@@ -35,14 +47,16 @@ export async function POST(request: Request) {
     const idToken = authHeader.split('Bearer ')[1];
     
     try {
-      // Verify the Firebase ID token
-      const decodedToken = await getAuth().verifyIdToken(idToken);
+      // Verify the Firebase ID token using our improved Firebase Admin initialization approach
+      const auth = getFirebaseAuth();
+      const decodedToken = await auth.verifyIdToken(idToken);
       const userId = decodedToken.uid;
       
       console.log(`Processing request for user ${userId}, file ${fileId}`);
       
       // Store the query in Firestore for history tracking
-      const db = getFirestore();
+      // Get Firestore instance using our improved initialization approach
+      const db = initializeFirebaseAdmin();
       const queryRef = db.collection(`users/${userId}/queries`).doc();
       await queryRef.set({
         fileId,

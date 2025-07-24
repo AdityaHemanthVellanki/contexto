@@ -1,6 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import { getFirestoreAdmin } from '@/lib/firestore-admin';
+import { initializeFirebaseAdmin } from '@/lib/firebase-admin-init';
+
+// Initialize Firebase Admin SDK at module load time
+// This ensures Firebase is ready before any requests are processed
+try {
+  // This will initialize Firebase Admin if not already initialized
+  initializeFirebaseAdmin();
+  console.log('✅ Firebase initialized successfully for deployVectorStore API');
+} catch (error) {
+  console.error('❌ Firebase initialization failed in deployVectorStore API:', 
+    error instanceof Error ? error.message : String(error));
+  // The error will be handled when the API route is called - no fallbacks
+}
 import { authenticateRequest } from '@/lib/api-auth';
 import { rateLimit } from '@/lib/rate-limiter-memory';
 
@@ -177,8 +189,8 @@ async function createSupabaseTable(pipelineId: string): Promise<string> {
 // Firestore collection creation
 async function createFirestoreCollection(pipelineId: string): Promise<string> {
   try {
-    // Get Firestore admin instance
-    const db = await getFirestoreAdmin();
+    // Get Firestore instance using our improved initialization approach
+    const db = initializeFirebaseAdmin();
     
     // Collection path for this pipeline's vectors
     const collectionPath = `embeddings/${pipelineId}/chunks`;
@@ -242,8 +254,8 @@ export async function POST(request: NextRequest) {
 
     const { fileId, pipelineId } = validationResult.data;
 
-    // Initialize Firestore
-    const db = await getFirestoreAdmin();
+    // Initialize Firestore using our improved initialization approach
+    const db = initializeFirebaseAdmin();
 
     // Load file metadata
     const uploadDoc = await db.collection('uploads').doc(fileId).get();

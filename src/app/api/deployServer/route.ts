@@ -1,21 +1,33 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import { getFirestoreAdmin } from '@/lib/firestore-admin';
 import { authenticateRequest } from '@/lib/api-auth';
 import { rateLimit } from '@/lib/rate-limiter-memory';
 import { r2, R2_BUCKET } from '@/lib/r2';
 import { GetObjectCommand } from '@aws-sdk/client-s3';
-import { getStoreSpecificConfig, getVectorStoreApiKey, setVercelEnvironmentVariables, generateEmbedding } from '@/lib/vercel-deploy';
+import { getStoreSpecificConfig, getVectorStoreApiKey, generateEmbedding } from '@/lib/vercel-deploy';
 import fs from 'fs/promises';
 import path from 'path';
+import { initializeFirebaseAdmin } from '@/lib/firebase-admin-init';
+
+// Initialize Firebase Admin SDK at module load time
+// This ensures Firebase is ready before any requests are processed
+try {
+  // This will initialize Firebase Admin if not already initialized
+  initializeFirebaseAdmin();
+  console.log('✅ Firebase initialized successfully for deployServer API');
+} catch (error) {
+  console.error('❌ Firebase initialization failed in deployServer API:', 
+    error instanceof Error ? error.message : String(error));
+  // The error will be handled when the API route is called - no fallbacks
+}
 
 // Request schema validation
 const DeployServerSchema = z.object({
   pipelineId: z.string().min(1)
 });
 
-// Vercel deployment file structure
-interface VercelFile {
+// Render deployment file structure
+interface RenderFile {
   file: string;
   data: string;
 }
@@ -85,8 +97,8 @@ function generateOpenAPISpec(pipelineId: string, purpose: string): string {
   }, null, 2);
 }
 
-// Generate Vercel serverless function
-function generateVercelFunction(pipelineId: string, vectorStoreEndpoint: string, storeType: string): string {
+// Generate MCP server function for Render deployment
+function generateMCPServerFunction(pipelineId: string, vectorStoreEndpoint: string, storeType: string): string {
   return `import { NextRequest, NextResponse } from 'next/server';
 import { initVectorStoreClient } from '../vectorStoreClient';
 
@@ -236,95 +248,99 @@ export async function GET() {
 `;
 }
 
-// Deploy to Vercel using their API
-async function deployToVercel(pipelineId: string, files: VercelFile[]): Promise<{ url: string; deploymentId: string }> {
-  const vercelToken = process.env.VERCEL_TOKEN;
-  const vercelOrgId = process.env.VERCEL_ORG_ID;
-  const vercelProjectId = process.env.VERCEL_PROJECT_ID;
+// Deploy to Render.com using their API
+async function deployToRender(pipelineId: string, downloadUrl: string, vectorStoreType: string, vectorStoreConfig: any): Promise<{ serviceUrl: string; serviceId: string }> {
+  const renderToken = process.env.RENDER_TOKEN;
+  const renderRegion = process.env.RENDER_REGION || 'iad';
+  const renderPlan = process.env.RENDER_PLAN || 'free';
 
-  if (!vercelToken || !vercelOrgId || !vercelProjectId) {
-    throw new Error('Vercel deployment credentials not configured');
+  if (!renderToken) {
+    throw new Error('Render deployment credentials not configured. Please set RENDER_TOKEN environment variable.');
   }
 
-  const deploymentName = `mcp-${pipelineId}`.toLowerCase().replace(/[^a-z0-9-]/g, '-');
-
   try {
-    // Create deployment with minimal valid payload for an existing Vercel Project
-    const deployResponse = await fetch('https://api.vercel.com/v13/deployments', {
+    // Step 1: Create a new Render Web Service
+    console.log(`Creating Render web service for pipeline: ${pipelineId}`);
+    
+    const createServicePayload = {
+      type: 'web_service',
+      name: pipelineId,
+      region: renderRegion,
+      plan: renderPlan,
+      envVars: [
+        // Azure OpenAI configuration
+        { key: 'AZURE_OPENAI_API_KEY', value: process.env.AZURE_OPENAI_API_KEY || '', sync: false },
+        { key: 'AZURE_OPENAI_ENDPOINT', value: process.env.AZURE_OPENAI_ENDPOINT || '', sync: false },
+        { key: 'AZURE_OPENAI_DEPLOYMENT_EMBEDDING', value: process.env.AZURE_OPENAI_DEPLOYMENT_EMBEDDING || '', sync: false },
+        { key: 'AZURE_OPENAI_DEPLOYMENT_TURBO', value: process.env.AZURE_OPENAI_DEPLOYMENT_TURBO || '', sync: false },
+        // Vector store configuration
+        { key: 'VECTOR_STORE_TYPE', value: vectorStoreType, sync: false },
+        { key: 'VECTOR_STORE_CONFIG', value: JSON.stringify(vectorStoreConfig), sync: false },
+        // Pipeline configuration
+        { key: 'PIPELINE_ID', value: pipelineId, sync: false }
+      ],
+      serviceDetails: {
+        type: 'docker',
+        dockerfilePath: 'Dockerfile'
+      },
+      autoscale: false,
+      instanceCount: 1
+    };
+
+    const createResponse = await fetch('https://api.render.com/v1/services', {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${vercelToken}`,
+        'Authorization': `Bearer ${renderToken}`,
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({
-        name: deploymentName,
-        // Include organization ID for team context
-        orgId: vercelOrgId,
-        // Correctly set target as production to ensure proper deployment
-        target: 'production',
-        // Include projectSettings for new projects (required by Vercel API)
-        projectSettings: {
-          framework: 'other',
-          rootDirectory: '',
-          installCommand: 'npm ci',
-          buildCommand: 'npm run build',
-          outputDirectory: ''
-        },
-        files: files.map(f => ({
-          file: f.file,
-          data: Buffer.from(f.data).toString('base64')
-        })),
-        functions: {
-          'api/mcp.ts': {
-            runtime: 'nodejs18.x'
-          }
-        }
-      })
+      body: JSON.stringify(createServicePayload)
+    });
+
+    if (!createResponse.ok) {
+      const error = await createResponse.text();
+      throw new Error(`Render service creation failed: ${error}`);
+    }
+
+    const serviceData = await createResponse.json();
+    const serviceId = serviceData.id;
+    const webServiceUrl = serviceData.webServiceUrl;
+    
+    console.log(`Created Render service: ${serviceId} at ${webServiceUrl}`);
+    
+    // Step 2: Trigger a manual deploy from the R2 ZIP
+    console.log(`Triggering manual deploy for service: ${serviceId} from ZIP: ${downloadUrl}`);
+    
+    const deployPayload = {
+      type: 'manual',
+      tarballUrl: downloadUrl,
+      rollBackOnFailure: true,
+      clearCache: true
+    };
+
+    const deployResponse = await fetch(`https://api.render.com/v1/services/${serviceId}/deploys`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${renderToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(deployPayload)
     });
 
     if (!deployResponse.ok) {
       const error = await deployResponse.text();
-      throw new Error(`Vercel deployment failed: ${error}`);
+      throw new Error(`Render manual deploy failed: ${error}`);
     }
 
-    const deployment = await deployResponse.json();
-    const deploymentId = deployment.id;
+    const deployData = await deployResponse.json();
+    console.log(`Deploy initiated with ID: ${deployData.id}`);
     
-    // Poll deployment status
-    let attempts = 0;
-    const maxAttempts = 30; // 5 minutes max
-    
-    while (attempts < maxAttempts) {
-      const statusResponse = await fetch(`https://api.vercel.com/v13/deployments/${deploymentId}`, {
-        headers: {
-          'Authorization': `Bearer ${vercelToken}`
-        }
-      });
-
-      if (statusResponse.ok) {
-        const status = await statusResponse.json();
-        
-        if (status.readyState === 'READY') {
-          return {
-            url: `https://${status.url}`,
-            deploymentId
-          };
-        }
-        
-        if (status.readyState === 'ERROR') {
-          throw new Error(`Deployment failed: ${status.error?.message || 'Unknown error'}`);
-        }
-      }
-
-      // Wait 10 seconds before next check
-      await new Promise(resolve => setTimeout(resolve, 10000));
-      attempts++;
-    }
-
-    throw new Error('Deployment timeout - please check Vercel dashboard');
+    return {
+      serviceUrl: webServiceUrl,
+      serviceId: serviceId
+    };
 
   } catch (error) {
-    console.error('Vercel deployment error:', error);
+    console.error('Render deployment error:', error);
     throw error;
   }
 }
@@ -365,11 +381,9 @@ export async function POST(request: NextRequest) {
 
     const { pipelineId } = validationResult.data;
 
-    // Initialize Firestore
-    const db = await getFirestoreAdmin();
-
     // Load pipeline metadata
-    const pipelineDoc = await db.collection('pipelines').doc(pipelineId).get();
+    const firestore = initializeFirebaseAdmin();
+    const pipelineDoc = await firestore.collection('pipelines').doc(pipelineId).get();
     if (!pipelineDoc.exists) {
       return NextResponse.json({ error: 'Pipeline not found' }, { status: 404 });
     }
@@ -380,7 +394,8 @@ export async function POST(request: NextRequest) {
     }
 
     // Check if vector store is deployed
-    const vectorStoreDoc = await db.collection('deployments').doc(`${userId}_${pipelineId}_vectorstore`).get();
+    // Using the firestore instance we already initialized above
+    const vectorStoreDoc = await firestore.collection('deployments').doc(`${userId}_${pipelineId}_vectorstore`).get();
     if (!vectorStoreDoc.exists) {
       return NextResponse.json({ 
         error: 'Vector store must be deployed first. Please deploy the vector store before deploying the server.' 
@@ -392,7 +407,8 @@ export async function POST(request: NextRequest) {
     const storeType = vectorStoreData.storeType;
 
     // Check if server is already deployed
-    const existingDeployment = await db.collection('deployments').doc(`${userId}_${pipelineId}_server`).get();
+    // Using the firestore instance we already initialized above
+    const existingDeployment = await firestore.collection('deployments').doc(`${userId}_${pipelineId}_server`).get();
     if (existingDeployment.exists) {
       const deploymentData = existingDeployment.data()!;
       if (deploymentData.status === 'deployed') {
@@ -427,10 +443,10 @@ export async function POST(request: NextRequest) {
     console.log(`Vector store config prepared for ${storeType}`);
 
     // Prepare deployment files
-    const files: VercelFile[] = [
+    const files: RenderFile[] = [
       {
         file: 'api/mcp.ts',
-        data: generateVercelFunction(pipelineId, vectorStoreEndpoint, storeType)
+        data: generateMCPServerFunction(pipelineId, vectorStoreEndpoint, storeType)
       },
       {
         file: 'vectorStoreClient.js',
@@ -505,24 +521,44 @@ Generated on: ${new Date().toISOString()}
       }
     ];
 
-    console.log(`Deploying MCP server for pipeline ${pipelineId} to Vercel...`);
+    console.log(`Deploying MCP server for pipeline ${pipelineId} to Render.com...`);
 
-    // Deploy to Vercel
-    const { url, deploymentId } = await deployToVercel(pipelineId, files);
-    
-    // Set environment variables for the deployment
-    await setVercelEnvironmentVariables(deploymentId, {
-      VECTOR_STORE_TYPE: storeType,
-      VECTOR_STORE_CONFIG: JSON.stringify(vectorStoreConfig),
+    // First, get the pipeline export URL from R2
+    // We need to call the export pipeline API to get the ZIP download URL
+    const exportResponse = await fetch(`${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/api/exportMCP`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': request.headers.get('Authorization') || ''
+      },
+      body: JSON.stringify({ pipelineId })
     });
 
+    if (!exportResponse.ok) {
+      const error = await exportResponse.text();
+      throw new Error(`Failed to export pipeline: ${error}`);
+    }
+
+    const exportData = await exportResponse.json();
+    const downloadUrl = exportData.downloadUrl;
+
+    if (!downloadUrl) {
+      throw new Error('No download URL received from pipeline export');
+    }
+
+    console.log(`Using pipeline ZIP from: ${downloadUrl}`);
+
+    // Deploy to Render.com
+    const { serviceUrl, serviceId } = await deployToRender(pipelineId, downloadUrl, storeType, vectorStoreConfig);
+
     // Save deployment metadata
-    await db.collection('deployments').doc(`${userId}_${pipelineId}_server`).set({
+    // Using the firestore instance we already initialized above
+    await firestore.collection('deployments').doc(`${userId}_${pipelineId}_server`).set({
       userId,
       pipelineId,
       type: 'server',
-      url,
-      deploymentId,
+      url: serviceUrl,
+      serviceId: serviceId,
       vectorStoreEndpoint,
       storeType,
       status: 'deployed',
@@ -531,21 +567,22 @@ Generated on: ${new Date().toISOString()}
     });
 
     // Log deployment
-    await db.collection('usage').add({
+    // Using the firestore instance we already initialized above
+    await firestore.collection('usage').add({
       userId,
       action: 'mcp_server_deployed',
       pipelineId,
-      url,
-      deploymentId,
+      url: serviceUrl,
+      serviceId: serviceId,
       timestamp: new Date()
     });
 
     return NextResponse.json({
-      mcpUrl: url,
-      deploymentId,
+      mcpUrl: serviceUrl,
+      serviceId: serviceId,
       vectorStoreEndpoint,
       storeType,
-      message: 'MCP server deployed successfully'
+      message: 'MCP server deployed successfully to Render.com'
     }, { 
       status: 200,
       headers: rateLimitResult.headers 

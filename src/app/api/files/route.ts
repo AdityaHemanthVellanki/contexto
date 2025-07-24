@@ -1,7 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { authenticateRequest } from '@/lib/api-auth';
 import { rateLimit } from '@/lib/rate-limiter-memory';
-import { getFirestore } from '@/lib/firebase-admin';
+import { initializeFirebaseAdmin } from '@/lib/firebase-admin-init';
+
+// Initialize Firebase Admin SDK at module load time
+// This ensures Firebase is ready before any requests are processed
+try {
+  // This will initialize Firebase Admin if not already initialized
+  initializeFirebaseAdmin();
+  console.log('✅ Firebase initialized successfully for files API');
+} catch (error) {
+  console.error('❌ Firebase initialization failed in files API:', 
+    error instanceof Error ? error.message : String(error));
+  // The error will be handled when the API route is called - no fallbacks
+}
 
 export async function GET(request: NextRequest) {
   try {
@@ -30,7 +42,8 @@ export async function GET(request: NextRequest) {
     }
 
     // Get user's uploaded files
-    const db = getFirestore();
+    // Get Firestore instance using our improved initialization approach
+    const db = initializeFirebaseAdmin();
     const uploadsRef = db.collection('uploads');
     const snapshot = await uploadsRef
       .where('userId', '==', userId)

@@ -6,7 +6,7 @@ import {
   ConversationStepConfig 
 } from '@/types/conversation';
 import { Timestamp } from 'firebase-admin/firestore';
-import { getFirestoreAdmin } from '@/lib/firestore-admin';
+import { getFirestoreInstance } from '@/lib/firebase-admin-init';
 
 // Conversation flow configuration
 const CONVERSATION_STEPS: Record<ConversationStep, ConversationStepConfig> = {
@@ -159,7 +159,7 @@ export class ConversationServerService {
    * Create a new conversation session
    */
   static async createSession(userId: string): Promise<ConversationSession> {
-    const db = await getFirestoreAdmin();
+    const db = getFirestoreInstance();
     
     const sessionData: Omit<ConversationSession, 'id'> = {
       userId,
@@ -195,7 +195,7 @@ export class ConversationServerService {
    * Get conversation session by ID
    */
   static async getSession(sessionId: string): Promise<ConversationSession | null> {
-    const db = await getFirestoreAdmin();
+    const db = getFirestoreInstance();
     
     const docRef = db.collection('conversations').doc(sessionId);
     const doc = await docRef.get();
@@ -226,7 +226,7 @@ export class ConversationServerService {
    * Get active session for user
    */
   static async getActiveSession(userId: string): Promise<ConversationSession | null> {
-    const db = await getFirestoreAdmin();
+    const db = getFirestoreInstance();
     
     const sessionsRef = db.collection('conversations');
     const querySnapshot = await sessionsRef
@@ -266,7 +266,7 @@ export class ConversationServerService {
     sessionId: string, 
     message: Omit<ConversationMessage, 'id' | 'timestamp'>
   ): Promise<void> {
-    const db = await getFirestoreAdmin();
+    const db = getFirestoreInstance();
     
     const sessionRef = db.collection('conversations').doc(sessionId);
     const session = await this.getSession(sessionId);
@@ -393,7 +393,7 @@ export class ConversationServerService {
     step: ConversationStep, 
     collectedData: PipelineConfig
   ): Promise<void> {
-    const db = await getFirestoreAdmin();
+    const db = getFirestoreInstance();
     
     // With ignoreUndefinedProperties enabled in Firestore settings,
     // we don't need to manually sanitize the data
@@ -507,7 +507,7 @@ Should I export this MCP pipeline now?`;
    * Mark session as completed
    */
   static async completeSession(sessionId: string): Promise<void> {
-    const db = await getFirestoreAdmin();
+    const db = getFirestoreInstance();
     await db.collection('conversations').doc(sessionId).update({
       status: 'completed',
       updatedAt: Timestamp.fromDate(new Date())

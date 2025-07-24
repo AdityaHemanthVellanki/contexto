@@ -1,8 +1,21 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { authenticateRequest } from '@/lib/api-auth';
 import { rateLimit } from '@/lib/rate-limiter-memory';
-import { getFirestore } from '@/lib/firebase-admin';
+import { initializeFirebaseAdmin } from '@/lib/firebase-admin-init';
+import { getFirebaseAuth } from '@/lib/firebase-admin-init';
 import { FieldValue } from 'firebase-admin/firestore';
+
+// Initialize Firebase Admin SDK at module load time
+// This ensures Firebase is ready before any requests are processed
+try {
+  // This will initialize Firebase Admin if not already initialized
+  initializeFirebaseAdmin();
+  console.log('✅ Firebase initialized successfully for chats/[chatId] API');
+} catch (error) {
+  console.error('❌ Firebase initialization failed in chats/[chatId] API:', 
+    error instanceof Error ? error.message : String(error));
+  // The error will be handled when the API route is called - no fallbacks
+}
 
 interface RouteParams {
   params: {
@@ -44,7 +57,8 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
     }
 
     // Update chat title
-    const db = getFirestore();
+    // Get Firestore instance using our improved initialization approach
+    const db = initializeFirebaseAdmin();
     const chatRef = db.collection('conversations').doc(userId).collection('chats').doc(chatId);
     
     // Check if chat exists and belongs to user
@@ -110,7 +124,8 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
     const { chatId } = params;
 
     // Delete chat and all associated messages
-    const db = getFirestore();
+    // Get Firestore instance using our improved initialization approach
+    const db = initializeFirebaseAdmin();
     const chatRef = db.collection('conversations').doc(userId).collection('chats').doc(chatId);
     
     // Check if chat exists and belongs to user

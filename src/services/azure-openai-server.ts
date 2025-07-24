@@ -6,9 +6,9 @@
 // Import the correct Azure OpenAI API classes
 import { OpenAI } from "openai";
 
-// Import Firestore from Firebase Admin SDK properly
+// Import Firestore from our shared Firebase Admin initialization module
 import { Timestamp } from 'firebase-admin/firestore';
-import { firestore } from '@/lib/firestore-admin';
+import { initializeFirebaseAdmin } from '@/lib/firebase-admin-init';
 
 // Environment variables for Azure OpenAI API
 const {
@@ -157,7 +157,9 @@ export async function generatePipelineFromPrompt(prompt: string): Promise<{
 
     // Log the generated pipeline to Firestore for analytics
     try {
-      await firestore.collection('pipeline-generations').add({
+      // Get Firestore instance from our shared Firebase Admin initialization module
+      const db = initializeFirebaseAdmin();
+      await db.collection('pipeline-generations').add({
         prompt,
         timestamp: Timestamp.now(),
         success: true,
@@ -179,7 +181,9 @@ export async function generatePipelineFromPrompt(prompt: string): Promise<{
     
     // Log error to Firestore
     try {
-      await firestore.collection('pipeline-errors').add({
+      // Get Firestore instance from our shared Firebase Admin initialization module
+      const db = initializeFirebaseAdmin();
+      await db.collection('pipeline-errors').add({
         prompt,
         timestamp: Timestamp.now(),
         success: false,

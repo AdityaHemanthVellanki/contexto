@@ -1,9 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getAuth, getFirestore } from '@/lib/firebase-admin';
+import { initializeFirebaseAdmin, getFirebaseAuth } from '@/lib/firebase-admin-init';
 
-// Initialize Firebase Admin services
-const auth = getAuth();
-const db = getFirestore();
+// Initialize Firebase Admin SDK at module load time
+// This ensures Firebase is ready before any requests are processed
+try {
+  // This will initialize Firebase Admin if not already initialized
+  const firestore = initializeFirebaseAdmin();
+  console.log('✅ Firebase initialized successfully for migrate-storage API');
+} catch (error) {
+  console.error('❌ Firebase initialization failed in migrate-storage API:', 
+    error instanceof Error ? error.message : String(error));
+  // The error will be handled when the API route is called - no fallbacks
+}
 
 /**
  * API endpoint to migrate files from Firebase Storage to Firestore
@@ -18,6 +26,8 @@ export async function POST(request: NextRequest) {;
     }
 
     const token = authHeader.split('Bearer ')[1];
+    // Get Firebase Auth instance using our helper function
+    const auth = getFirebaseAuth();
     const decodedToken = await auth.verifyIdToken(token);
     const userId = decodedToken.uid;
 
@@ -31,6 +41,8 @@ export async function POST(request: NextRequest) {;
     
     if (fileId) {
       // Migrate a specific file
+      // Get Firestore instance using our improved initialization approach
+      const db = initializeFirebaseAdmin();
       const fileDoc = await db.collection('uploads').doc(fileId).get();
       
       if (!fileDoc.exists) {
@@ -82,6 +94,7 @@ export async function POST(request: NextRequest) {;
         }
         
         // Update the Firestore document with file content
+        // Using the db instance we already initialized above
         await db.collection('uploads').doc(fileId).update({
           fileContent,
           migratedAt: new Date(),
@@ -103,6 +116,8 @@ export async function POST(request: NextRequest) {;
       }
     } else {
       // Migrate all files for this user (batch operation)
+      // Get Firestore instance using our improved initialization approach
+      const db = initializeFirebaseAdmin();
       const snapshot = await db.collection('uploads')
         .where('userId', '==', userId)
         .where('fileContent', '==', null)
@@ -152,6 +167,7 @@ export async function POST(request: NextRequest) {;
           }
           
           // Update the Firestore document
+          // Using the db instance we already initialized above
           await db.collection('uploads').doc(doc.id).update({
             fileContent,
             migratedAt: new Date(),

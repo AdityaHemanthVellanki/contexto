@@ -1,15 +1,24 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getAuth, getFirestore } from '@/lib/firebase-admin';
+import { initializeFirebaseAdmin } from '@/lib/firebase-admin-init';
+import { getFirebaseAuth } from '@/lib/firebase-admin-init';
 import { authenticateRequest } from '@/lib/api-auth';
 import { rateLimit } from '@/lib/rate-limiter-memory';
 import { r2, R2_BUCKET } from '@/lib/r2';
 import { PutObjectCommand } from '@aws-sdk/client-s3';
-import * as admin from 'firebase-admin';
+import { FieldValue } from 'firebase-admin/firestore';
 import JSZip from 'jszip';
 
-// Initialize Firebase Admin services
-const db = getFirestore();
-const FieldValue = admin.firestore.FieldValue;
+// Initialize Firebase Admin SDK at module load time
+// This ensures Firebase is ready before any requests are processed
+try {
+  // This will initialize Firebase Admin if not already initialized
+  initializeFirebaseAdmin();
+  console.log('✅ Firebase initialized successfully for exportMCP API');
+} catch (error) {
+  console.error('❌ Firebase initialization failed in exportMCP API:', 
+    error instanceof Error ? error.message : String(error));
+  // The error will be handled when the API route is called - no fallbacks
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -49,6 +58,8 @@ export async function POST(request: NextRequest) {
     }
 
     // Verify file ownership
+    // Get Firestore instance using our improved initialization approach
+    const db = initializeFirebaseAdmin();
     const uploadRef = db.collection('uploads').doc(fileId);
     const uploadDoc = await uploadRef.get();
     
@@ -62,6 +73,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Get pipeline configuration
+    // Using the db instance we already initialized above
     const pipelineRef = db.collection('pipelines').doc(fileId);
     const pipelineDoc = await pipelineRef.get();
     
@@ -308,6 +320,7 @@ app.listen(PORT, () => {
       : `https://${R2_BUCKET}.r2.cloudflarestorage.com/${encodeURIComponent(r2Key)}`;
     
     // Store metadata in Firestore exports collection
+    // Using the db instance we already initialized above
     const exportRef = db.collection('exports').doc(exportId);
     await exportRef.set({
       userId,

@@ -1,9 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getFirestore } from '@/lib/firebase-admin';
+import { initializeFirebaseAdmin } from '@/lib/firebase-admin-init';
 import { authenticateRequest } from '@/lib/api-auth';
 
-// Initialize Firestore
-const getDb = async () => await getFirestore();
+// Initialize Firebase Admin SDK at module load time
+// This ensures Firebase is ready before any requests are processed
+try {
+  // This will initialize Firebase Admin if not already initialized
+  initializeFirebaseAdmin();
+  console.log('✅ Firebase initialized successfully for exportPipeline API');
+} catch (error) {
+  console.error('❌ Firebase initialization failed in exportPipeline API:', 
+    error instanceof Error ? error.message : String(error));
+  // The error will be handled when the API route is called - no fallbacks
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -29,9 +38,10 @@ export async function POST(request: NextRequest) {
       });
     }
     
-    // Fetch the pipeline from Firestore using Admin SDK
+    // Fetch the pipeline from Firestore using our improved initialization approach
     try {
-      const db = await getDb();
+      // Get Firestore instance using our improved initialization approach
+      const db = initializeFirebaseAdmin();
       const pipelineRef = db.collection('pipelines').doc(pipelineId);
       const pipelineDoc = await pipelineRef.get();
       

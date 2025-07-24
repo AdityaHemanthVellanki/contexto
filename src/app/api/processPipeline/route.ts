@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import { getFirebaseAdmin } from '@/lib/firebase-admin';
-import { getFirestoreAdmin } from '@/lib/firestore-admin';
+// Use only our shared Firebase Admin initialization module
+import { initializeFirebaseAdmin } from '@/lib/firebase-admin-init';
 import { FieldValue } from 'firebase-admin/firestore';
 import { rateLimit } from '@/lib/rate-limiter-memory';
 import { authenticateRequest } from '@/lib/api-auth';
@@ -11,6 +11,19 @@ import { r2, R2_BUCKET } from '@/lib/r2';
 import { GetObjectCommand } from '@aws-sdk/client-s3';
 import { processFile } from '@/lib/fileProcessor';
 import { exportMCPPipeline } from '@/lib/mcpExporter';
+
+// Initialize Firebase Admin SDK at module load time
+// This ensures Firebase is ready before any requests are processed
+try {
+  // This will initialize Firebase Admin if not already initialized
+  console.log('Using existing Firebase Admin SDK instance');
+  initializeFirebaseAdmin();
+  console.log('✅ Firebase initialized successfully for processPipeline API');
+} catch (error) {
+  console.error('❌ Firebase initialization failed in processPipeline API:', 
+    error instanceof Error ? error.message : String(error));
+  // The error will be handled when the API route is called
+}
 
 // Request schema validation
 const ProcessPipelineSchema = z.object({
@@ -91,8 +104,9 @@ export async function POST(request: NextRequest) {
 
     const { fileId, purpose } = validationResult.data;
 
-    // Initialize Firestore
-    const db = await getFirestoreAdmin();
+    // Initialize Firestore using our shared module
+    // This ensures Firebase Admin is properly initialized
+    const db = initializeFirebaseAdmin();
 
     // 1. Verify file ownership and get file metadata
     const uploadDoc = await db.collection('uploads').doc(fileId).get();
@@ -309,8 +323,8 @@ export async function POST(request: NextRequest) {
 
     // 7. Save pipeline to Firestore
     try {
-      // Ensure we have the latest db reference
-      const db = await getFirestoreAdmin();
+      // Use our shared Firebase Admin initialization module
+      const db = initializeFirebaseAdmin();
       await db.collection('pipelines').doc(pipelineId).set({
         ...pipeline,
         userId,
@@ -341,8 +355,8 @@ export async function POST(request: NextRequest) {
 
     // 10. Log usage metrics
     try {
-      // Ensure we have the latest db reference for metrics logging
-      const metricsDb = await getFirestoreAdmin();
+      // Use our shared Firebase Admin initialization module for metrics logging
+      const metricsDb = initializeFirebaseAdmin();
       await metricsDb.collection('usage').add({
         userId,
         action: 'pipeline_processed',

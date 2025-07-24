@@ -1,10 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getFirestore } from '@/lib/firebase-admin';
+import { initializeFirebaseAdmin } from '@/lib/firebase-admin-init';
 import { rateLimit } from '@/lib/rate-limiter-memory';
 import { authenticateRequest } from '@/lib/api-auth';
-import * as admin from 'firebase-admin';
+import { Firestore } from 'firebase-admin/firestore';
 
-// Firebase Admin services will be initialized inside the request handler
+// Initialize Firebase Admin SDK at module load time
+// This ensures Firebase is ready before any requests are processed
+try {
+  // This will initialize Firebase Admin if not already initialized
+  initializeFirebaseAdmin();
+  console.log('✅ Firebase initialized successfully for uploads API');
+} catch (error) {
+  console.error('❌ Firebase initialization failed in uploads API:', 
+    error instanceof Error ? error.message : String(error));
+  // The error will be handled when the API route is called - no fallbacks
+}
 
 export async function GET(request: NextRequest) {
   try {
@@ -34,10 +44,10 @@ export async function GET(request: NextRequest) {
     const userId = auth.userId;
 
     try {
-      // Initialize Firestore inside the handler to properly await it
-      const db = await getFirestore();
+      // Use our shared Firebase Admin initialization module
+      const db = initializeFirebaseAdmin();
       
-      // Verify database connection first
+      // Verify database connection
       if (!db) {
         throw new Error('Database connection unavailable');
       }
@@ -53,7 +63,7 @@ export async function GET(request: NextRequest) {
       const query = uploadsRef.where('userId', '==', userId).orderBy('uploadedAt', 'desc');
       const snapshot = await query.get();
 
-      const uploads = snapshot.docs.map((doc: admin.firestore.QueryDocumentSnapshot) => {
+      const uploads = snapshot.docs.map((doc) => {
         const data = doc.data();
         return {
           fileId: doc.id,

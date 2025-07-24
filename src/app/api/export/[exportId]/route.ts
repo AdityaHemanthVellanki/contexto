@@ -1,12 +1,22 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getFirestore } from '@/lib/firebase-admin';
+import { initializeFirebaseAdmin } from '@/lib/firebase-admin-init';
+import { getFirebaseAuth } from '@/lib/firebase-admin-init';
 import { authenticateRequest } from '@/lib/api-auth';
 import { rateLimit } from '@/lib/rate-limiter-memory';
 import { r2, R2_BUCKET } from '@/lib/r2';
 import { GetObjectCommand, S3ServiceException } from '@aws-sdk/client-s3';
 
-// Initialize Firebase Admin services
-const db = getFirestore();
+// Initialize Firebase Admin SDK at module load time
+// This ensures Firebase is ready before any requests are processed
+try {
+  // This will initialize Firebase Admin if not already initialized
+  initializeFirebaseAdmin();
+  console.log('✅ Firebase initialized successfully for export/[exportId] API');
+} catch (error) {
+  console.error('❌ Firebase initialization failed in export/[exportId] API:', 
+    error instanceof Error ? error.message : String(error));
+  // The error will be handled when the API route is called - no fallbacks
+}
 
 export async function GET(
   request: NextRequest,
@@ -44,6 +54,8 @@ export async function GET(
     const userId = auth.userId;
 
     // Get export data from Firestore
+    // Get Firestore instance using our improved initialization approach
+    const db = initializeFirebaseAdmin();
     const exportDoc = await db.collection('exports').doc(exportId).get();
     
     if (!exportDoc.exists) {

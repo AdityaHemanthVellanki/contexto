@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { Timestamp } from 'firebase-admin/firestore';
-import { getFirestore } from '@/lib/firebase-admin';
+import { initializeFirebaseAdmin } from '@/lib/firebase-admin-init';
 import { authenticateRequest } from '@/lib/api-auth';
 import { extractText } from '@/lib/textExtraction';
 import { createEmbeddings } from '@/lib/embeddings';
@@ -9,8 +9,17 @@ import { GetObjectCommand } from '@aws-sdk/client-s3';
 import { createWriteStream, promises as fs } from 'fs';
 import { pipeline } from 'stream/promises';
 
-// Initialize Firebase Admin services
-const db = getFirestore();
+// Initialize Firebase Admin SDK at module load time
+// This ensures Firebase is ready before any requests are processed
+try {
+  // This will initialize Firebase Admin if not already initialized
+  initializeFirebaseAdmin();
+  console.log('✅ Firebase initialized successfully for ingest API');
+} catch (error) {
+  console.error('❌ Firebase initialization failed in ingest API:', 
+    error instanceof Error ? error.message : String(error));
+  // The error will be handled when the API route is called - no fallbacks
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -33,6 +42,8 @@ export async function POST(request: NextRequest) {
     }
 
     // Verify file ownership
+    // Get Firestore instance using our improved initialization approach
+    const db = initializeFirebaseAdmin();
     const uploadRef = db.collection('uploads').doc(fileId);
     const uploadDoc = await uploadRef.get();
     
@@ -56,6 +67,7 @@ export async function POST(request: NextRequest) {
 
     // Create a default pipeline configuration
     const pipelineId = fileId;
+    // Using the db instance we already initialized above
     const pipelineRef = db.collection('pipelines').doc(pipelineId);
     
     // Default pipeline configuration
@@ -286,6 +298,7 @@ export async function POST(request: NextRequest) {
     const embeddingResults = allEmbeddingResults;
     
     // 5. Store embeddings in Firestore
+    // Using the db instance we already initialized above
     const embeddingsRef = db.collection('embeddings').doc(pipelineId);
     await embeddingsRef.set({
       pipelineId,
@@ -301,6 +314,7 @@ export async function POST(request: NextRequest) {
     const FIRESTORE_BATCH_LIMIT = 500;
     
     for (let i = 0; i < embeddingResults.length; i += FIRESTORE_BATCH_LIMIT) {
+      // Using the db instance we already initialized above
       const chunksBatch = db.batch();
       const batchEnd = Math.min(i + FIRESTORE_BATCH_LIMIT, embeddingResults.length);
       

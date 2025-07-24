@@ -1,15 +1,25 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getFirestore } from '@/lib/firebase-admin';
-import { getFirebaseAdmin } from '@/lib/firebase-admin';
+import { initializeFirebaseAdmin } from '@/lib/firebase-admin-init';
 import { authenticateRequest } from '@/lib/api-auth';
 import { r2, R2_BUCKET } from '@/lib/r2';
 import { GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { Readable } from 'stream';
+import { getStorage } from 'firebase-admin/storage';
 
-// Initialize Firebase Admin services
-const db = getFirestore();
-const admin = getFirebaseAdmin();
-const storage = admin.storage();
+// Initialize Firebase Admin SDK at module load time
+// This ensures Firebase is ready before any requests are processed
+try {
+  // This will initialize Firebase Admin if not already initialized
+  initializeFirebaseAdmin();
+  console.log('✅ Firebase initialized successfully for file API');
+} catch (error) {
+  console.error('❌ Firebase initialization failed in file API:', 
+    error instanceof Error ? error.message : String(error));
+  // The error will be handled when the API route is called - no fallbacks
+}
+
+// Get Firebase Storage instance
+const storage = getStorage();
 
 // Helper function to concatenate stream chunks into a buffer
 async function streamToBuffer(stream: Readable): Promise<Buffer> {
@@ -57,6 +67,8 @@ export async function GET(
 
     // Get file document from Firestore
     // Note: Collection might be 'files' or 'uploads' based on previous code, using 'uploads' as in original
+    // Get Firestore instance using our improved initialization approach
+    const db = initializeFirebaseAdmin();
     const fileRef = db.collection('uploads').doc(fileId);
     const fileDoc = await fileRef.get();
     
@@ -192,6 +204,8 @@ export async function DELETE(
     }
 
     // Get file document from Firestore
+    // Get Firestore instance using our improved initialization approach
+    const db = initializeFirebaseAdmin();
     const fileRef = db.collection('uploads').doc(fileId);
     const fileDoc = await fileRef.get();
     
@@ -212,12 +226,14 @@ export async function DELETE(
     }
 
     // Start a batch to delete all related documents
+    // Using the db instance we already initialized above
     const batch = db.batch();
     
     // 1. Delete the file from the uploads collection
     batch.delete(fileRef);
     
     // 2. Delete the pipeline if it exists
+    // Using the db instance we already initialized above
     const pipelineRef = db.collection('pipelines').doc(fileId);
     const pipelineDoc = await pipelineRef.get();
     if (pipelineDoc.exists) {
@@ -225,6 +241,7 @@ export async function DELETE(
     }
     
     // 3. Delete embeddings if they exist
+    // Using the db instance we already initialized above
     const embeddingsRef = db.collection('embeddings').doc(fileId);
     const embeddingsDoc = await embeddingsRef.get();
     if (embeddingsDoc.exists) {
@@ -232,7 +249,8 @@ export async function DELETE(
       const chunksSnapshot = await embeddingsRef.collection('chunks').get();
       
       // Add each chunk document to the batch for deletion
-      chunksSnapshot.forEach(doc => {
+      // Add proper type for the doc parameter
+      chunksSnapshot.forEach((doc: FirebaseFirestore.QueryDocumentSnapshot) => {
         batch.delete(doc.ref);
       });
       

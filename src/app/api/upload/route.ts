@@ -7,7 +7,7 @@ import { PutObjectCommand } from '@aws-sdk/client-s3';
 
 // Import Firebase Admin SDK and Firestore admin
 import { getFirebaseAdmin } from '@/lib/firebase-admin';
-import { getFirestoreAdmin } from '@/lib/firestore-admin';
+import { getFirestoreInstance } from '@/lib/firebase-admin-init';
 
 /**
  * Handle binary file upload directly from raw request body
@@ -118,7 +118,7 @@ async function handleBinaryUpload(request: NextRequest, userId: string): Promise
       : `https://${R2_BUCKET}.r2.cloudflarestorage.com/${encodeURIComponent(key)}`;
     
     // Store metadata in Firestore using Firebase Admin SDK directly
-    const db = await getFirestoreAdmin();
+    const db = getFirestoreInstance();
     const uploadRef = db.collection('uploads').doc(uploadId);
     
     // Create complete document with all required fields including userId
@@ -345,7 +345,7 @@ export async function POST(request: NextRequest) {
         console.log(`Generated file URL: ${fileUrl}`);
         
         // Store only metadata in Firestore (not the file content)
-        const db = await getFirestoreAdmin();
+        const db = getFirestoreInstance();
         const uploadRef = db.collection('uploads').doc(uploadId);
         await uploadRef.set({
           userId,

@@ -1,15 +1,23 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getFirestore } from '@/lib/firebase-admin';
-import { getFirebaseAdmin } from '@/lib/firebase-admin';
+import { initializeFirebaseAdmin } from '@/lib/firebase-admin-init';
+import { getFirebaseAuth } from '@/lib/firebase-admin-init';
 import { authenticateRequest } from '@/lib/api-auth';
 import { rateLimit } from '@/lib/rate-limiter-memory';
 import { r2, R2_BUCKET } from '@/lib/r2';
 import { PutObjectCommand } from '@aws-sdk/client-s3';
+import { FieldValue } from 'firebase-admin/firestore';
 
-// Initialize Firebase Admin services
-const db = getFirestore();
-const admin = getFirebaseAdmin();
-const FieldValue = admin.firestore.FieldValue;
+// Initialize Firebase Admin SDK at module load time
+// This ensures Firebase is ready before any requests are processed
+try {
+  // This will initialize Firebase Admin if not already initialized
+  initializeFirebaseAdmin();
+  console.log('✅ Firebase initialized successfully for exports API');
+} catch (error) {
+  console.error('❌ Firebase initialization failed in exports API:', 
+    error instanceof Error ? error.message : String(error));
+  // The error will be handled when the API route is called - no fallbacks
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -97,6 +105,8 @@ export async function POST(request: NextRequest) {
     }
     
     // Create metadata entry in Firestore
+    // Get Firestore instance using our improved initialization approach
+    const db = initializeFirebaseAdmin();
     const exportRef = db.collection('exports').doc(exportId);
     await exportRef.set({
       userId,
@@ -168,11 +178,14 @@ export async function GET(request: NextRequest) {
     const userId = auth.userId;
 
     // Query exports collection for user's exports
+    // Get Firestore instance using our improved initialization approach
+    const db = initializeFirebaseAdmin();
     const exportsRef = db.collection('exports');
     const query = exportsRef.where('userId', '==', userId).orderBy('exportedAt', 'desc');
     const snapshot = await query.get();
 
-    const exports = snapshot.docs.map(doc => {
+    // Add proper type for the doc parameter
+    const exports = snapshot.docs.map((doc: FirebaseFirestore.QueryDocumentSnapshot) => {
       const data = doc.data();
       // Safely handle the timestamp conversion
       let exportedAt;

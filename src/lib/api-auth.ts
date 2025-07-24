@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getAuth } from './firebase-admin';
-import { DecodedIdToken } from 'firebase-admin/auth';
+import { getFirebaseAuth } from './firebase-admin-init';
+import type { DecodedIdToken } from 'firebase-admin/auth';
 
 /**
  * Helper function to authenticate and authorize API requests
@@ -32,8 +32,10 @@ export async function authenticateRequest(request: NextRequest): Promise<{
     
     // Production verification with proper error handling
     try {
-      // Get Firebase Auth instance
-      const auth = await getAuth();
+      // Get Firebase Auth instance using our helper function
+      // This ensures Firebase Admin is initialized first
+      const auth = getFirebaseAuth();
+      console.log('✅ Firebase Auth initialized successfully in authenticateRequest');
       
       // Verify the token with Firebase
       const decodedToken = await auth.verifyIdToken(token, true); // Force token refresh check
@@ -69,10 +71,33 @@ export async function authenticateRequest(request: NextRequest): Promise<{
         token,
         decodedToken
       };
-    } catch (error: any) {
-      // Handle specific Firebase Auth errors
-      const errorCode = error?.code || '';
-      const errorMessage = error?.message || 'Unknown authentication error';
+    } catch (error: unknown) {
+      // Handle specific Firebase Auth errors with proper type checking
+      const errorCode = error instanceof Error && 'code' in error ? (error as any).code : '';
+      const errorMessage = error instanceof Error ? error.message : 'Unknown authentication error';
+      
+      // Log detailed error information for debugging
+      console.error('❌ Authentication error:', {
+        code: errorCode,
+        message: errorMessage,
+        stack: error instanceof Error ? error.stack : undefined
+      });
+      
+      // Handle Firebase initialization errors specifically
+      if (errorMessage.includes('Firebase initialization failed') || 
+          errorMessage.includes('default Firebase app does not exist')) {
+        return {
+          authenticated: false,
+          response: NextResponse.json(
+            { 
+              message: 'Server configuration error', 
+              details: 'Firebase initialization failed',
+              code: 'FIREBASE_INIT_ERROR'
+            },
+            { status: 500 }
+          )
+        };
+      }
       
       // For expired tokens, send a specific error code
       if (errorCode === 'auth/id-token-expired' || errorMessage.includes('expired')) {
