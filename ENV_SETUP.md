@@ -28,6 +28,21 @@ NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=your-messaging-sender-id
 NEXT_PUBLIC_FIREBASE_APP_ID=your-app-id
 ```
 
+### Railway Deployment Configuration
+```
+RAILWAY_TOKEN=your-railway-api-token
+RAILWAY_PROJECT_SLUG=your-railway-project-slug  # your personal or team slug
+```
+
+### Cloudflare R2 Configuration (for file storage and VSIX hosting)
+```
+R2_ACCOUNT_ID=your-r2-account-id
+R2_ACCESS_KEY_ID=your-r2-access-key
+R2_SECRET_ACCESS_KEY=your-r2-secret-key
+R2_BUCKET=your-r2-bucket-name
+R2_PUBLIC_URL=your-r2-public-domain  # e.g., files.yourdomain.com
+```
+
 ## Security Notes
 
 - All Azure OpenAI environment variables are server-side only and not exposed to the client.

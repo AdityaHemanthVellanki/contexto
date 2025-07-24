@@ -3,8 +3,11 @@ import { z } from 'zod';
 import { authenticateRequest } from '@/lib/api-auth';
 import { rateLimit } from '@/lib/rate-limiter-memory';
 import { r2, R2_BUCKET } from '@/lib/r2';
-import { GetObjectCommand } from '@aws-sdk/client-s3';
+import { GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 import { getStoreSpecificConfig, getVectorStoreApiKey, generateEmbedding } from '@/lib/vercel-deploy';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+import os from 'os';
 import fs from 'fs/promises';
 import path from 'path';
 import { initializeFirebaseAdmin } from '@/lib/firebase-admin-init';
@@ -23,13 +26,81 @@ try {
 
 // Request schema validation
 const DeployServerSchema = z.object({
-  pipelineId: z.string().min(1)
+  pipelineId: z.string().min(1),
+  fileId: z.string().min(1)
 });
 
-// Render deployment file structure
-interface RenderFile {
+// Railway deployment file structure
+interface RailwayFile {
   file: string;
   data: string;
+}
+
+// Promisify exec for async usage
+const execAsync = promisify(exec);
+
+// Generate VS Code extension and upload to R2
+async function generateVSCodeExtension(pipelineId: string, mcpUrl: string): Promise<string> {
+  const tempDir = path.join(os.tmpdir(), `vscode-ext-${pipelineId}`);
+  const templateDir = path.join(process.cwd(), 'vscode-extension-template');
+  
+  try {
+    // Copy template to temp directory
+    await execAsync(`cp -r "${templateDir}" "${tempDir}"`);
+    
+    // Update package.json with MCP endpoint
+    const packageJsonPath = path.join(tempDir, 'package.json');
+    const packageJson = JSON.parse(await fs.readFile(packageJsonPath, 'utf8'));
+    
+    // Set default endpoint in configuration
+    packageJson.contributes.configuration.properties['contexto.endpoint'].default = mcpUrl;
+    
+    // Write updated package.json
+    await fs.writeFile(packageJsonPath, JSON.stringify(packageJson, null, 2));
+    
+    // Update extension.ts to embed MCP URL as constant
+    const extensionPath = path.join(tempDir, 'src', 'extension.ts');
+    let extensionCode = await fs.readFile(extensionPath, 'utf8');
+    extensionCode = extensionCode.replace(
+      'PLACEHOLDER_MCP_URL',
+      mcpUrl
+    );
+    await fs.writeFile(extensionPath, extensionCode);
+    
+    // Install dependencies and compile
+    await execAsync('npm install', { cwd: tempDir });
+    await execAsync('npm run compile', { cwd: tempDir });
+    
+    // Package with vsce
+    const vsixPath = path.join(tempDir, `contexto-mcp-client-1.0.0.vsix`);
+    await execAsync(`vsce package --out "${vsixPath}"`, { cwd: tempDir });
+    
+    // Upload to R2
+    const vsixBuffer = await fs.readFile(vsixPath);
+    const r2Key = `vsixs/${pipelineId}.vsix`;
+    
+    await r2.send(new PutObjectCommand({
+      Bucket: R2_BUCKET,
+      Key: r2Key,
+      Body: vsixBuffer,
+      ContentType: 'application/octet-stream'
+    }));
+    
+    // Clean up temp directory
+    await execAsync(`rm -rf "${tempDir}"`);
+    
+    // Return R2 URL
+    return `https://${process.env.R2_PUBLIC_URL}/${r2Key}`;
+    
+  } catch (error) {
+    // Clean up on error
+    try {
+      await execAsync(`rm -rf "${tempDir}"`);
+    } catch (cleanupError) {
+      console.error('Cleanup error:', cleanupError);
+    }
+    throw error;
+  }
 }
 
 // Generate OpenAPI specification for the MCP server
@@ -97,7 +168,7 @@ function generateOpenAPISpec(pipelineId: string, purpose: string): string {
   }, null, 2);
 }
 
-// Generate MCP server function for Render deployment
+// Generate MCP server function for Railway deployment
 function generateMCPServerFunction(pipelineId: string, vectorStoreEndpoint: string, storeType: string): string {
   return `import { NextRequest, NextResponse } from 'next/server';
 import { initVectorStoreClient } from '../vectorStoreClient';
@@ -248,79 +319,71 @@ export async function GET() {
 `;
 }
 
-// Deploy to Render.com using their API
-async function deployToRender(pipelineId: string, downloadUrl: string, vectorStoreType: string, vectorStoreConfig: any): Promise<{ serviceUrl: string; serviceId: string }> {
-  const renderToken = process.env.RENDER_TOKEN;
-  const renderRegion = process.env.RENDER_REGION || 'iad';
-  const renderPlan = process.env.RENDER_PLAN || 'free';
+// Deploy to Railway using their API
+async function deployToRailway(pipelineId: string, downloadUrl: string, vectorStoreType: string, vectorStoreConfig: any): Promise<{ serviceUrl: string; serviceId: string }> {
+  // Load all required Railway configuration from environment variables
+  const {
+    RAILWAY_TOKEN,
+    RAILWAY_PROJECT_SLUG
+  } = process.env;
 
-  if (!renderToken) {
-    throw new Error('Render deployment credentials not configured. Please set RENDER_TOKEN environment variable.');
+  // Strict validation - all environment variables must be present
+  if (!RAILWAY_TOKEN || !RAILWAY_PROJECT_SLUG) {
+    throw new Error(
+      'Missing Railway deployment env vars: ensure RAILWAY_TOKEN and RAILWAY_PROJECT_SLUG are set'
+    );
   }
 
   try {
-    // Step 1: Create a new Render Web Service
-    console.log(`Creating Render web service for pipeline: ${pipelineId}`);
+    // Step 1: Create a new Railway Project
+    console.log(`Creating Railway project for pipeline: ${pipelineId}`);
     
-    const createServicePayload = {
-      type: 'web_service',
+    const createProjectPayload = {
       name: pipelineId,
-      region: renderRegion,
-      plan: renderPlan,
-      envVars: [
-        // Azure OpenAI configuration
-        { key: 'AZURE_OPENAI_API_KEY', value: process.env.AZURE_OPENAI_API_KEY || '', sync: false },
-        { key: 'AZURE_OPENAI_ENDPOINT', value: process.env.AZURE_OPENAI_ENDPOINT || '', sync: false },
-        { key: 'AZURE_OPENAI_DEPLOYMENT_EMBEDDING', value: process.env.AZURE_OPENAI_DEPLOYMENT_EMBEDDING || '', sync: false },
-        { key: 'AZURE_OPENAI_DEPLOYMENT_TURBO', value: process.env.AZURE_OPENAI_DEPLOYMENT_TURBO || '', sync: false },
-        // Vector store configuration
-        { key: 'VECTOR_STORE_TYPE', value: vectorStoreType, sync: false },
-        { key: 'VECTOR_STORE_CONFIG', value: JSON.stringify(vectorStoreConfig), sync: false },
-        // Pipeline configuration
-        { key: 'PIPELINE_ID', value: pipelineId, sync: false }
-      ],
-      serviceDetails: {
-        type: 'docker',
-        dockerfilePath: 'Dockerfile'
-      },
-      autoscale: false,
-      instanceCount: 1
+      slug: pipelineId
     };
 
-    const createResponse = await fetch('https://api.render.com/v1/services', {
+    const createProjectResponse = await fetch('https://api.railway.app/v1/projects', {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${renderToken}`,
+        'Authorization': `Bearer ${RAILWAY_TOKEN}`,
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify(createServicePayload)
+      body: JSON.stringify(createProjectPayload)
     });
 
-    if (!createResponse.ok) {
-      const error = await createResponse.text();
-      throw new Error(`Render service creation failed: ${error}`);
+    if (!createProjectResponse.ok) {
+      const error = await createProjectResponse.text();
+      throw new Error(`Railway project creation failed: ${error}`);
     }
 
-    const serviceData = await createResponse.json();
-    const serviceId = serviceData.id;
-    const webServiceUrl = serviceData.webServiceUrl;
+    const projectData = await createProjectResponse.json();
+    const projectId = projectData.id;
     
-    console.log(`Created Render service: ${serviceId} at ${webServiceUrl}`);
+    console.log(`Created Railway project: ${projectId}`);
     
-    // Step 2: Trigger a manual deploy from the R2 ZIP
-    console.log(`Triggering manual deploy for service: ${serviceId} from ZIP: ${downloadUrl}`);
+    // Step 2: Deploy from the R2 ZIP with environment variables
+    console.log(`Deploying to Railway project: ${projectId} from ZIP: ${downloadUrl}`);
     
     const deployPayload = {
-      type: 'manual',
-      tarballUrl: downloadUrl,
-      rollBackOnFailure: true,
-      clearCache: true
+      url: downloadUrl,
+      name: pipelineId,
+      type: 'tarball',
+      envs: {
+        AZURE_OPENAI_API_KEY: process.env.AZURE_OPENAI_API_KEY || '',
+        AZURE_OPENAI_ENDPOINT: process.env.AZURE_OPENAI_ENDPOINT || '',
+        AZURE_OPENAI_DEPLOYMENT_EMBEDDING: process.env.AZURE_OPENAI_DEPLOYMENT_EMBEDDING || '',
+        AZURE_OPENAI_DEPLOYMENT_TURBO: process.env.AZURE_OPENAI_DEPLOYMENT_TURBO || '',
+        VECTOR_STORE_TYPE: vectorStoreType,
+        VECTOR_STORE_CONFIG: JSON.stringify(vectorStoreConfig),
+        PIPELINE_ID: pipelineId
+      }
     };
 
-    const deployResponse = await fetch(`https://api.render.com/v1/services/${serviceId}/deploys`, {
+    const deployResponse = await fetch(`https://api.railway.app/v1/projects/${projectId}/deployments`, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${renderToken}`,
+        'Authorization': `Bearer ${RAILWAY_TOKEN}`,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify(deployPayload)
@@ -328,19 +391,21 @@ async function deployToRender(pipelineId: string, downloadUrl: string, vectorSto
 
     if (!deployResponse.ok) {
       const error = await deployResponse.text();
-      throw new Error(`Render manual deploy failed: ${error}`);
+      throw new Error(`Railway deployment failed: ${error}`);
     }
 
     const deployData = await deployResponse.json();
-    console.log(`Deploy initiated with ID: ${deployData.id}`);
+    const serviceUrl = deployData.url; // Railway returns the deployment URL
+    
+    console.log(`Railway deployment successful: ${serviceUrl}`);
     
     return {
-      serviceUrl: webServiceUrl,
-      serviceId: serviceId
+      serviceUrl: serviceUrl,
+      serviceId: projectId
     };
 
   } catch (error) {
-    console.error('Render deployment error:', error);
+    console.error('Railway deployment error:', error);
     throw error;
   }
 }
@@ -379,7 +444,7 @@ export async function POST(request: NextRequest) {
       }, { status: 400 });
     }
 
-    const { pipelineId } = validationResult.data;
+    const { pipelineId, fileId } = validationResult.data;
 
     // Load pipeline metadata
     const firestore = initializeFirebaseAdmin();
@@ -443,7 +508,7 @@ export async function POST(request: NextRequest) {
     console.log(`Vector store config prepared for ${storeType}`);
 
     // Prepare deployment files
-    const files: RenderFile[] = [
+    const files: RailwayFile[] = [
       {
         file: 'api/mcp.ts',
         data: generateMCPServerFunction(pipelineId, vectorStoreEndpoint, storeType)
@@ -521,7 +586,7 @@ Generated on: ${new Date().toISOString()}
       }
     ];
 
-    console.log(`Deploying MCP server for pipeline ${pipelineId} to Render.com...`);
+    console.log(`Deploying MCP server for pipeline ${pipelineId} to Railway...`);
 
     // First, get the pipeline export URL from R2
     // We need to call the export pipeline API to get the ZIP download URL
@@ -531,7 +596,7 @@ Generated on: ${new Date().toISOString()}
         'Content-Type': 'application/json',
         'Authorization': request.headers.get('Authorization') || ''
       },
-      body: JSON.stringify({ pipelineId })
+      body: JSON.stringify({ pipelineId, fileId })
     });
 
     if (!exportResponse.ok) {
@@ -548,8 +613,13 @@ Generated on: ${new Date().toISOString()}
 
     console.log(`Using pipeline ZIP from: ${downloadUrl}`);
 
-    // Deploy to Render.com
-    const { serviceUrl, serviceId } = await deployToRender(pipelineId, downloadUrl, storeType, vectorStoreConfig);
+    // Deploy to Railway
+    // Deploy to Railway
+    const { serviceUrl, serviceId } = await deployToRailway(pipelineId, downloadUrl, storeType, vectorStoreConfig);
+    
+    // Generate VS Code extension
+    console.log('Generating VS Code extension...');
+    const vsixUrl = await generateVSCodeExtension(pipelineId, serviceUrl);
 
     // Save deployment metadata
     // Using the firestore instance we already initialized above
@@ -579,10 +649,11 @@ Generated on: ${new Date().toISOString()}
 
     return NextResponse.json({
       mcpUrl: serviceUrl,
+      vsixUrl: vsixUrl,
       serviceId: serviceId,
       vectorStoreEndpoint,
       storeType,
-      message: 'MCP server deployed successfully to Render.com'
+      message: 'MCP server deployed successfully to Railway with VS Code extension'
     }, { 
       status: 200,
       headers: rateLimitResult.headers 

@@ -27,9 +27,10 @@ interface Message {
     downloadUrl?: string;
     pipelineId?: string;
     mcpUrl?: string;
+    vsixUrl?: string;
     vectorStoreEndpoint?: string;
     storeType?: string;
-    deploymentId?: string;
+    serviceId?: string;
   };
 }
 
@@ -357,15 +358,15 @@ export default function SimpleChatWindow({ chatId }: SimpleChatWindowProps) {
       const { vectorStoreEndpoint, storeType } = await vectorStoreResponse.json();
       addMessage('ai', `✅ Vector store deployed: ${storeType}`);
 
-      // Step 2: Deploy MCP Server
-      addMessage('ai', '⚙️ Deploying MCP server to Vercel...');
+      // Step 2: Deploy MCP Server and generate VS Code extension
+      addMessage('ai', '🚀 Deploying MCP server to Railway and generating VS Code extension...');
       const serverResponse = await fetch('/api/deployServer', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
         },
-        body: JSON.stringify({ pipelineId })
+        body: JSON.stringify({ pipelineId, fileId })
       });
 
       if (!serverResponse.ok) {
@@ -373,15 +374,26 @@ export default function SimpleChatWindow({ chatId }: SimpleChatWindowProps) {
         throw new Error(error.error || 'Server deployment failed');
       }
 
-      const { mcpUrl, deploymentId } = await serverResponse.json();
+      const { mcpUrl, vsixUrl, serviceId } = await serverResponse.json();
 
       // Success message with deployment details
       setChatState('complete');
-      addMessage('ai', '🎉 Deployment complete!', {
+      addMessage('ai', `✅ Deployment complete!
+
+• **MCP endpoint:** ${mcpUrl}
+• **[Download VS Code extension](${vsixUrl})**
+
+**Install in VS Code:**
+\`\`\`bash
+code --install-extension ${vsixUrl.split('/').pop()}
+\`\`\`
+
+Then run "Contexto: Ask MCP" command in VS Code!`, {
         mcpUrl,
+        vsixUrl,
         vectorStoreEndpoint,
         storeType,
-        deploymentId
+        serviceId
       });
 
     } catch (error) {
