@@ -107,7 +107,7 @@ class ContextoE2ETestSuite {
       'CF_R2_BUCKET_NAME',
       'AZURE_OPENAI_API_KEY',
       'PINECONE_API_KEY',
-      'VERCEL_TOKEN'
+      'HEROKU_API_KEY'
     ];
 
     for (const envVar of requiredEnvVars) {
@@ -409,7 +409,7 @@ class ContextoE2ETestSuite {
   }
 
   private async testLiveEndpoints(user: TestUser): Promise<void> {
-    const mcpUrl = 'https://test-pipeline.vercel.app'; // This would come from deployment
+    const mcpUrl = 'https://test-pipeline.herokuapp.com'; // This would come from Heroku deployment
 
     // Test /ingest endpoint
     const ingestResponse = await fetch(`${mcpUrl}/ingest`, {

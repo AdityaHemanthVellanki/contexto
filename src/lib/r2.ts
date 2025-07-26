@@ -20,7 +20,7 @@ if (missingVars.length > 0) {
   // Log to help with debugging
   console.error('Environment check:', {
     NODE_ENV: process.env.NODE_ENV || 'not set',
-    VERCEL_ENV: process.env.VERCEL_ENV || 'not set',
+    HEROKU_REGION: process.env.HEROKU_REGION || 'not set',
     hasAccessKey: !!process.env.CF_R2_ACCESS_KEY_ID,
     hasSecretKey: !!process.env.CF_R2_SECRET_ACCESS_KEY,
     hasEndpoint: !!process.env.CF_R2_ENDPOINT,

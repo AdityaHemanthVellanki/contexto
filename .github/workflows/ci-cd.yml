@@ -77,13 +77,20 @@ jobs:
         run: npm run build
         # Use environment variables from the job level to avoid duplication
           
-      - name: Setup Firebase
-        uses: FirebaseExtended/action-hosting-deploy@v0
+      - name: Deploy to Heroku
         # Only run deploy step on the main repo
         if: ${{ github.repository == 'AdityaHemanthVellanki/contexto' }}
-        with:
-          repoToken: ${{ github.token }}
-          firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT || '' }}
-          channelId: live
-          projectId: ${{ secrets.NEXT_PUBLIC_FIREBASE_PROJECT_ID || '' }}
-          entryPoint: "."
+        env:
+          HEROKU_API_KEY: ${{ secrets.HEROKU_API_KEY }}
+          HEROKU_TEAM: ${{ secrets.HEROKU_TEAM }}
+          HEROKU_REGION: ${{ secrets.HEROKU_REGION || 'us' }}
+        run: |
+          npm install -g heroku
+          heroku container:login
+          if [ -n "$HEROKU_TEAM" ]; then
+            heroku create contexto-app-${{ github.run_id }} --team="$HEROKU_TEAM" --region="$HEROKU_REGION" || true
+          else
+            heroku create contexto-app-${{ github.run_id }} --region="$HEROKU_REGION" || true
+          fi
+          heroku container:push web --app contexto-app-${{ github.run_id }}
+          heroku container:release web --app contexto-app-${{ github.run_id }}

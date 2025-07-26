@@ -1,8 +1,9 @@
 import { z } from 'zod';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { extractTextFromImage } from './image-ocr';
 
-// Supported file types - restricted to only six common document types
+// Supported file types - common document and image types
 export const SupportedFileTypes = {
   // Text files
   TEXT: 'text/plain',
@@ -12,7 +13,11 @@ export const SupportedFileTypes = {
   
   // Documents
   PDF: 'application/pdf',
-  DOCX: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+  DOCX: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  
+  // Images (with OCR support)
+  PNG: 'image/png',
+  JPEG: 'image/jpeg'
 } as const;
 
 // Extensions for supported file types
@@ -22,7 +27,10 @@ export const SupportedFileExtensions = {
   JSON: '.json',
   MARKDOWN: '.md',
   PDF: '.pdf',
-  DOCX: '.docx'
+  DOCX: '.docx',
+  PNG: '.png',
+  JPEG: '.jpg',
+  JPG: '.jpeg'
 } as const;
 
 export type FileType = typeof SupportedFileTypes[keyof typeof SupportedFileTypes];
@@ -58,6 +66,11 @@ export async function processFile(
       // Microsoft Office documents
       case SupportedFileTypes.DOCX:
         return await processDOCX(buffer);
+      
+      // Image files with OCR
+      case SupportedFileTypes.PNG:
+      case SupportedFileTypes.JPEG:
+        return await extractTextFromImage(buffer, mimeType, fileName);
       
       default:
         throw new Error(`Unsupported file type: ${mimeType}`);
@@ -191,7 +204,9 @@ export function getFileTypeDescription(mimeType: string): string {
     [SupportedFileTypes.JSON]: 'JSON Data',
     [SupportedFileTypes.MARKDOWN]: 'Markdown Document',
     [SupportedFileTypes.PDF]: 'PDF Document',
-    [SupportedFileTypes.DOCX]: 'Word Document'
+    [SupportedFileTypes.DOCX]: 'Word Document',
+    [SupportedFileTypes.PNG]: 'PNG Image',
+    [SupportedFileTypes.JPEG]: 'JPEG Image'
   };
   
   return descriptions[mimeType] || 'Unsupported File Type';

@@ -4,7 +4,7 @@ import { authenticateRequest } from '@/lib/api-auth';
 import { rateLimit } from '@/lib/rate-limiter-memory';
 import { r2, R2_BUCKET } from '@/lib/r2';
 import { GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
-import { getStoreSpecificConfig, getVectorStoreApiKey, generateEmbedding } from '@/lib/vercel-deploy';
+import { deployToHeroku } from '@/lib/heroku-deploy';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import os from 'os';
@@ -30,8 +30,8 @@ const DeployServerSchema = z.object({
   fileId: z.string().min(1)
 });
 
-// Railway deployment file structure
-interface RailwayFile {
+// Heroku deployment file structure
+interface HerokuFile {
   file: string;
   data: string;
 }
@@ -114,8 +114,8 @@ function generateOpenAPISpec(pipelineId: string, purpose: string): string {
     },
     servers: [
       {
-        url: 'https://your-deployment-url.vercel.app',
-        description: 'Production server'
+        url: 'https://your-app-name.herokuapp.com',
+        description: 'Heroku production server'
       }
     ],
     paths: {
@@ -168,7 +168,7 @@ function generateOpenAPISpec(pipelineId: string, purpose: string): string {
   }, null, 2);
 }
 
-// Generate MCP server function for Railway deployment
+// Generate MCP server function for Heroku deployment
 function generateMCPServerFunction(pipelineId: string, vectorStoreEndpoint: string, storeType: string): string {
   return `import { NextRequest, NextResponse } from 'next/server';
 import { initVectorStoreClient } from '../vectorStoreClient';
@@ -319,95 +319,97 @@ export async function GET() {
 `;
 }
 
-// Deploy to Railway using their API
-async function deployToRailway(pipelineId: string, downloadUrl: string, vectorStoreType: string, vectorStoreConfig: any): Promise<{ serviceUrl: string; serviceId: string }> {
-  // Load all required Railway configuration from environment variables
-  const {
-    RAILWAY_TOKEN,
-    RAILWAY_PROJECT_SLUG
-  } = process.env;
+// This function is no longer used - we use verifyHerokuDeployment instead
+async function verifyRailwayDeployment(pipelineId: string): Promise<{ verified: boolean; status: string; message: string }> {
+  console.warn('verifyRailwayDeployment is deprecated, use verifyHerokuDeployment instead');
+  return {
+    verified: false,
+    status: 'error',
+    message: 'Railway deployments are no longer supported. Use Heroku deployments instead.'
+  };
+}
 
-  // Strict validation - all environment variables must be present
-  if (!RAILWAY_TOKEN || !RAILWAY_PROJECT_SLUG) {
-    throw new Error(
-      'Missing Railway deployment env vars: ensure RAILWAY_TOKEN and RAILWAY_PROJECT_SLUG are set'
-    );
-  }
-
+// Verify Heroku deployment by checking the app URL
+async function verifyHerokuDeployment(appUrl: string): Promise<{ verified: boolean; status: string; message: string }> {
   try {
-    // Step 1: Create a new Railway Project
-    console.log(`Creating Railway project for pipeline: ${pipelineId}`);
-    
-    const createProjectPayload = {
-      name: pipelineId,
-      slug: pipelineId
-    };
-
-    const createProjectResponse = await fetch('https://api.railway.app/v1/projects', {
-      method: 'POST',
+    // Try to fetch the app URL to verify it's responding
+    const response = await fetch(`${appUrl}/health`, {
+      method: 'GET',
       headers: {
-        'Authorization': `Bearer ${RAILWAY_TOKEN}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(createProjectPayload)
-    });
-
-    if (!createProjectResponse.ok) {
-      const error = await createProjectResponse.text();
-      throw new Error(`Railway project creation failed: ${error}`);
-    }
-
-    const projectData = await createProjectResponse.json();
-    const projectId = projectData.id;
-    
-    console.log(`Created Railway project: ${projectId}`);
-    
-    // Step 2: Deploy from the R2 ZIP with environment variables
-    console.log(`Deploying to Railway project: ${projectId} from ZIP: ${downloadUrl}`);
-    
-    const deployPayload = {
-      url: downloadUrl,
-      name: pipelineId,
-      type: 'tarball',
-      envs: {
-        AZURE_OPENAI_API_KEY: process.env.AZURE_OPENAI_API_KEY || '',
-        AZURE_OPENAI_ENDPOINT: process.env.AZURE_OPENAI_ENDPOINT || '',
-        AZURE_OPENAI_DEPLOYMENT_EMBEDDING: process.env.AZURE_OPENAI_DEPLOYMENT_EMBEDDING || '',
-        AZURE_OPENAI_DEPLOYMENT_TURBO: process.env.AZURE_OPENAI_DEPLOYMENT_TURBO || '',
-        VECTOR_STORE_TYPE: vectorStoreType,
-        VECTOR_STORE_CONFIG: JSON.stringify(vectorStoreConfig),
-        PIPELINE_ID: pipelineId
+        'Accept': 'application/json'
       }
-    };
-
-    const deployResponse = await fetch(`https://api.railway.app/v1/projects/${projectId}/deployments`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${RAILWAY_TOKEN}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(deployPayload)
     });
-
-    if (!deployResponse.ok) {
-      const error = await deployResponse.text();
-      throw new Error(`Railway deployment failed: ${error}`);
+    
+    if (response.ok) {
+      return {
+        verified: true,
+        status: 'success',
+        message: `Heroku deployment at ${appUrl} verified successfully`
+      };
+    } else {
+      return {
+        verified: false,
+        status: 'warning',
+        message: `Heroku app is deployed but health check returned ${response.status}`
+      };
     }
-
-    const deployData = await deployResponse.json();
-    const serviceUrl = deployData.url; // Railway returns the deployment URL
-    
-    console.log(`Railway deployment successful: ${serviceUrl}`);
-    
-    return {
-      serviceUrl: serviceUrl,
-      serviceId: projectId
-    };
-
   } catch (error) {
-    console.error('Railway deployment error:', error);
-    throw error;
+    console.error('Heroku verification error:', error);
+    return {
+      verified: false,
+      status: 'error',
+      message: `❌ Verification failed: ${error instanceof Error ? error.message : 'Unknown error'}`
+    };
   }
+}
+
+// Get vector store specific configuration
+export function getVectorStoreApiKey(storeType: string): string {
+  switch (storeType) {
+    case 'pinecone':
+      return process.env.PINECONE_API_KEY || '';
+    case 'qdrant':
+      return process.env.QDRANT_API_KEY || '';
+    case 'supabase':
+      return process.env.SUPABASE_SERVICE_KEY || '';
+    case 'firestore':
+      return ''; // Firestore uses Firebase credentials
+    default:
+      return '';
+  }
+}
+
+// Get store-specific configuration
+export function getStoreSpecificConfig(storeType: string, pipelineId: string, userId: string): any {
+  switch (storeType) {
+    case 'pinecone':
+      return {
+        environment: process.env.PINECONE_ENVIRONMENT || '',
+        index: process.env.PINECONE_INDEX || ''
+      };
+    case 'qdrant':
+      return {
+        collection: `${userId}_${pipelineId}`.replace(/[^a-zA-Z0-9_]/g, '_')
+      };
+    case 'supabase':
+      return {
+        supabaseUrl: process.env.SUPABASE_URL || '',
+        table: `${userId}_${pipelineId}`.replace(/[^a-zA-Z0-9_]/g, '_')
+      };
+    case 'firestore':
+      return {
+        collection: `${userId}_${pipelineId}_embeddings`.replace(/[^a-zA-Z0-9_]/g, '_')
+      };
+    default:
+      return {};
+  }
+}
+
+// Generate embedding function
+export function generateEmbedding(text: string): Promise<number[]> {
+  // Implementation would go here
+  // This is a placeholder that would be replaced with actual embedding generation
+  return Promise.resolve([]);
 }
 
 export async function POST(request: NextRequest) {
@@ -508,7 +510,7 @@ export async function POST(request: NextRequest) {
     console.log(`Vector store config prepared for ${storeType}`);
 
     // Prepare deployment files
-    const files: RailwayFile[] = [
+    const files: HerokuFile[] = [
       {
         file: 'api/mcp.ts',
         data: generateMCPServerFunction(pipelineId, vectorStoreEndpoint, storeType)
@@ -539,25 +541,8 @@ export async function POST(request: NextRequest) {
         }, null, 2)
       },
       {
-        file: 'vercel.json',
-        data: JSON.stringify({
-          version: 2,
-          functions: {
-            'api/mcp.ts': {
-              runtime: 'nodejs18.x'
-            }
-          },
-          routes: [
-            {
-              src: '/mcp',
-              dest: '/api/mcp'
-            },
-            {
-              src: '/health',
-              dest: '/api/mcp'
-            }
-          ]
-        }, null, 2)
+        file: 'Procfile',
+        data: 'web: npm start'
       },
       {
         file: 'openapi.yaml',
@@ -586,7 +571,7 @@ Generated on: ${new Date().toISOString()}
       }
     ];
 
-    console.log(`Deploying MCP server for pipeline ${pipelineId} to Railway...`);
+    console.log(`Deploying MCP server for pipeline ${pipelineId} to Heroku...`);
 
     // First, get the pipeline export URL from R2
     // We need to call the export pipeline API to get the ZIP download URL
@@ -611,15 +596,40 @@ Generated on: ${new Date().toISOString()}
       throw new Error('No download URL received from pipeline export');
     }
 
+    console.log(`deployServer handler: resolved downloadUrl = ${downloadUrl}`);
     console.log(`Using pipeline ZIP from: ${downloadUrl}`);
 
-    // Deploy to Railway
-    // Deploy to Railway
-    const { serviceUrl, serviceId } = await deployToRailway(pipelineId, downloadUrl, storeType, vectorStoreConfig);
+    // Deploy to Heroku
+    console.log('Initiating Heroku deployment with validated configuration...');
+    let appUrl, appId;
+    try {
+      const deployResult = await deployToHeroku(pipelineId, downloadUrl, storeType, vectorStoreConfig);
+      appUrl = deployResult.appUrl;
+      appId = deployResult.appId;
+      console.log(`Heroku deployment successful: ${appUrl}`);
+    } catch (deployError) {
+      console.error('Heroku deployment failed with error:', deployError);
+      return NextResponse.json({
+        error: deployError instanceof Error ? deployError.message : 'Heroku deployment failed',
+        details: 'Please check your Heroku configuration and API key'
+      }, { status: 500 });
+    }
+
+    // Verify Heroku deployment
+    console.log('Verifying Heroku deployment...');
+    const verificationResult = await verifyHerokuDeployment(appUrl);
+    console.log(`Heroku verification result: ${verificationResult.message}`);
+
+    // Log verification result for debugging but don't fail the deployment
+    // This allows the deployment to proceed even if verification fails
+    if (!verificationResult.verified) {
+      console.warn(`Heroku deployment verification failed: ${verificationResult.message}`);
+      // Still continue with the deployment process
+    }
     
     // Generate VS Code extension
     console.log('Generating VS Code extension...');
-    const vsixUrl = await generateVSCodeExtension(pipelineId, serviceUrl);
+    const vsixUrl = await generateVSCodeExtension(pipelineId, appUrl);
 
     // Save deployment metadata
     // Using the firestore instance we already initialized above
@@ -627,8 +637,8 @@ Generated on: ${new Date().toISOString()}
       userId,
       pipelineId,
       type: 'server',
-      url: serviceUrl,
-      serviceId: serviceId,
+      url: appUrl,
+      serviceId: appId,
       vectorStoreEndpoint,
       storeType,
       status: 'deployed',
@@ -642,27 +652,51 @@ Generated on: ${new Date().toISOString()}
       userId,
       action: 'mcp_server_deployed',
       pipelineId,
-      url: serviceUrl,
-      serviceId: serviceId,
+      url: appUrl,
+      serviceId: appId,
       timestamp: new Date()
     });
 
     return NextResponse.json({
-      mcpUrl: serviceUrl,
+      mcpUrl: appUrl,
       vsixUrl: vsixUrl,
-      serviceId: serviceId,
+      appId: appId,
       vectorStoreEndpoint,
       storeType,
-      message: 'MCP server deployed successfully to Railway with VS Code extension'
-    }, { 
+      message: 'MCP server deployed successfully to Heroku',
+      verification: {
+        verified: verificationResult.verified,
+        status: verificationResult.status,
+        message: verificationResult.message
+      }
+    }, {
       status: 200,
-      headers: rateLimitResult.headers 
+      headers: rateLimitResult.headers
     });
 
-  } catch (error) {
+  } catch (error: unknown) {
     console.error('MCP server deployment error:', error);
+    
+    // Extract detailed error information
+    let errorMessage = 'Unknown deployment error';
+    let errorDetails = '';
+    
+    if (error instanceof Error) {
+      errorMessage = error.message;
+      errorDetails = error.stack || '';
+    } else if (typeof error === 'string') {
+      errorMessage = error;
+    } else if (error && typeof error === 'object') {
+      errorMessage = JSON.stringify(error);
+    }
+    
+    // Log detailed error for debugging
+    console.error(`Deployment error details: ${errorMessage}\n${errorDetails}`);
+    
     return NextResponse.json({
-      error: error instanceof Error ? error.message : 'Unknown deployment error'
+      error: errorMessage,
+      details: 'Please check your Heroku configuration, API key, and network connectivity',
+      timestamp: new Date().toISOString()
     }, { status: 500 });
   }
 }

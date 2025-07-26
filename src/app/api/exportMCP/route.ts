@@ -74,7 +74,13 @@ export async function POST(request: NextRequest) {
 
     // Get pipeline configuration
     // Using the db instance we already initialized above
-    const pipelineRef = db.collection('pipelines').doc(fileId);
+    const { pipelineId } = body;
+    
+    if (!pipelineId) {
+      return NextResponse.json({ message: 'Bad request: No pipelineId provided' }, { status: 400 });
+    }
+    
+    const pipelineRef = db.collection('pipelines').doc(pipelineId);
     const pipelineDoc = await pipelineRef.get();
     
     if (!pipelineDoc.exists) {
@@ -326,7 +332,7 @@ app.listen(PORT, () => {
       userId,
       exportId,
       fileId,
-      pipelineId: fileId, // Using fileId as pipelineId for now
+      pipelineId, // Use the actual pipelineId
       fileName: `${uploadData?.fileName || 'Document'} MCP Server`,
       exportUrl,
       r2Key, // Store R2 key instead of Firebase path
@@ -336,13 +342,29 @@ app.listen(PORT, () => {
       exportType: 'mcp',
     });
     
-    // Return ZIP file as response with exportId for tracking
-    return new Response(buffer, {
-      headers: {
-        'Content-Type': 'application/zip',
-        'Content-Disposition': `attachment; filename=contexto-mcp-${fileId}.zip`,
-        'X-Export-Id': exportId
+    // Create a download URL for the ZIP file
+    const downloadUrl = `${process.env.NEXT_PUBLIC_R2_PUBLIC_URL}/${encodeURIComponent(r2Key)}`;
+    
+    // Update the export record with the download URL
+    await exportRef.update({
+      downloadUrl,
+      status: 'completed',
+      fileType: 'mcp-pipeline',
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(), // 7 days
+      metadata: {
+        exportType: 'mcp',
+        timestamp: new Date().toISOString()
       }
+    });
+    
+    console.log(`MCP pipeline exported successfully: ${downloadUrl}`);
+    
+    // Return JSON with download URL and exportId for tracking
+    return NextResponse.json({
+      downloadUrl,
+      exportId,
+      pipelineId
     });
 
   } catch (error) {

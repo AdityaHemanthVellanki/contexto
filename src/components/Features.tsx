@@ -22,7 +22,7 @@ const Features = () => {
     {
       icon: <FiCloud className="w-8 h-8" />,
       title: "1-Click Deploy",
-      description: "Export code or deploy to Vercel/Railway with one click. Go from concept to production in minutes, not days."
+      description: "Export code or deploy to Heroku with one click. Go from concept to production in minutes, not days."
     }
   ];
 

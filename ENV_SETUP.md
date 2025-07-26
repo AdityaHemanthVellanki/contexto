@@ -28,10 +28,11 @@ NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=your-messaging-sender-id
 NEXT_PUBLIC_FIREBASE_APP_ID=your-app-id
 ```
 
-### Railway Deployment Configuration
+### Heroku Deployment Configuration
 ```
-RAILWAY_TOKEN=your-railway-api-token
-RAILWAY_PROJECT_SLUG=your-railway-project-slug  # your personal or team slug
+HEROKU_API_KEY=your-heroku-api-key  # API key from Heroku account settings
+HEROKU_TEAM=your-team-name  # Optional: Team name if deploying to a team account
+HEROKU_REGION=us  # Optional: Region for deployments (defaults to 'us')
 ```
 
 ### Cloudflare R2 Configuration (for file storage and VSIX hosting)

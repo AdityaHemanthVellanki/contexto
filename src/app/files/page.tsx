@@ -168,7 +168,7 @@ export default function FilesPage() {
               type="file"
               id="file-upload"
               className="hidden"
-              accept=".txt,.csv,.json,.pdf,.md,.docx,.pptx,.xlsx"
+              accept=".txt,.csv,.json,.pdf,.md,.docx,.pptx,.xlsx,.png,.jpg,.jpeg"
               onChange={handleFileUpload}
               disabled={uploading}
             />

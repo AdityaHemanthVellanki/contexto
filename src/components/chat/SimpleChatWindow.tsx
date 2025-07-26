@@ -359,7 +359,7 @@ export default function SimpleChatWindow({ chatId }: SimpleChatWindowProps) {
       addMessage('ai', `✅ Vector store deployed: ${storeType}`);
 
       // Step 2: Deploy MCP Server and generate VS Code extension
-      addMessage('ai', '🚀 Deploying MCP server to Railway and generating VS Code extension...');
+      addMessage('ai', '🚀 Deploying MCP server to Heroku and generating VS Code extension...');
       const serverResponse = await fetch('/api/deployServer', {
         method: 'POST',
         headers: {
@@ -378,7 +378,7 @@ export default function SimpleChatWindow({ chatId }: SimpleChatWindowProps) {
 
       // Success message with deployment details
       setChatState('complete');
-      addMessage('ai', `✅ Deployment complete!
+      addMessage('ai', `✅ Heroku deployment complete!
 
 • **MCP endpoint:** ${mcpUrl}
 • **[Download VS Code extension](${vsixUrl})**
@@ -454,7 +454,7 @@ Then run "Contexto: Ask MCP" command in VS Code!`, {
                 ) : (
                   <Rocket size={16} />
                 )}
-                {isDeploying ? 'Deploying...' : 'Deploy MCP Server'}
+                {isDeploying ? 'Deploying...' : 'Deploy to Heroku'}
               </button>
             )}
           </div>
@@ -462,7 +462,7 @@ Then run "Contexto: Ask MCP" command in VS Code!`, {
         
         {message.metadata?.mcpUrl && (
           <div className="mt-3 p-3 bg-green-50 dark:bg-green-900/20 rounded-lg border border-green-200 dark:border-green-800">
-            <h4 className="font-semibold text-green-800 dark:text-green-200 mb-2">🚀 Deployment Complete!</h4>
+            <h4 className="font-semibold text-green-800 dark:text-green-200 mb-2">🚀 Heroku Deployment Complete!</h4>
             <div className="space-y-1 text-sm">
               <div>
                 <span className="font-medium">MCP Server:</span>{' '}

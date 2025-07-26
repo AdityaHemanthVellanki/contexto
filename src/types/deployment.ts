@@ -3,9 +3,9 @@
  */
 
 /**
- * Represents a file to be deployed to Vercel
+ * Represents a file to be deployed to Heroku
  */
-export interface VercelFile {
+export interface HerokuFile {
   file: string;
   data: string;
 }
