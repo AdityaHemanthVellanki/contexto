@@ -1,0 +1,26 @@
+name = "contexto-r2-proxy"
+main = "src/index.ts"
+compatibility_date = "2025-07-27"
+
+# Development environment (local testing)
+[dev]
+port = 8787
+
+# Production environment
+[env.production]
+name = "contexto-r2-proxy"
+route = ""
+workers_dev = true
+
+# Production environment variables (set via `wrangler secret put` in production)
+# These should be set in the Cloudflare dashboard or via CLI:
+# wrangler secret put CF_R2_ENDPOINT
+# wrangler secret put CF_R2_BUCKET_NAME
+# wrangler secret put CF_R2_ACCESS_KEY_ID
+# wrangler secret put CF_R2_SECRET_ACCESS_KEY
+
+# Local development environment variables (create a .dev.vars file for local testing)
+# CF_R2_ENDPOINT="https://your-account-id.r2.cloudflarestorage.com"
+# CF_R2_BUCKET_NAME="your-bucket-name"
+# CF_R2_ACCESS_KEY_ID="your-access-key-id"
+# CF_R2_SECRET_ACCESS_KEY="your-secret-access-key"

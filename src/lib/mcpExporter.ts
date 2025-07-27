@@ -89,12 +89,13 @@ export async function exportMCPPipeline(pipeline: Pipeline, userId: string): Pro
       ContentDisposition: `attachment; filename="mcp-pipeline-${validatedPipeline.id}.zip"`
     }));
 
-    // Use the export service to ensure consistent URL generation
+    // Use the export service to generate a presigned URL
     const { getPipelineExportUrl } = await import('../services/exportService');
-    const downloadUrl = getPipelineExportUrl(userId, exportId);
+    const downloadUrl = await getPipelineExportUrl(userId, exportId);
     
-    // Log the generated URL for debugging
-    console.log('mcpExporter: generated downloadUrl =', downloadUrl);
+    // Log the generated URL (without query params for security)
+    const urlObj = new URL(downloadUrl);
+    console.log('mcpExporter: generated presigned URL for', `${urlObj.origin}${urlObj.pathname}`);
 
     // Log export to Firestore
     await logExport(exportId, validatedPipeline.id, userId, r2Key, downloadUrl);

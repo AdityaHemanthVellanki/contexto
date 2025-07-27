@@ -9,9 +9,9 @@
     "lint": "next lint"
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.842.0",
+    "@aws-sdk/client-s3": "^3.850.0",
     "@aws-sdk/node-http-handler": "^3.370.0",
-    "@aws-sdk/s3-request-presigner": "^3.842.0",
+    "@aws-sdk/s3-request-presigner": "^3.850.0",
     "@azure/openai": "^2.0.0",
     "@emotion/react": "^11.14.0",
     "@emotion/styled": "^11.14.1",

@@ -216,85 +216,87 @@ export async function createHerokuBuild({
   version
 }: CreateHerokuBuildOptions): Promise<HerokuBuild> {
   // Validate the source URL
-  if (!sourceBlobUrl) {
-    throw new Error('Missing required sourceBlobUrl');
+  if (typeof sourceBlobUrl !== 'string' || !sourceBlobUrl) {
+    throw new Error('Invalid sourceBlobUrl: must be a non-empty string');
   }
-
-  // Parse and validate the URL components
-  let parsedUrl: URL;
-  let finalUrl: string;
   
-  try {
-    // Ensure URL is properly formatted and force HTTPS
-    let normalizedUrl = sourceBlobUrl;
-    
-    // Add protocol if missing
-    if (!normalizedUrl.startsWith('http')) {
-      normalizedUrl = `https://${normalizedUrl}`;
-    }
-    
-    parsedUrl = new URL(normalizedUrl);
-    
-    // Force HTTPS
-    if (parsedUrl.protocol !== 'https:') {
-      parsedUrl.protocol = 'https:';
-      normalizedUrl = parsedUrl.toString();
-    }
-    
-    finalUrl = normalizedUrl; // Store the final URL
-    
-    // Log the URL components for debugging
-    console.log('[createHerokuBuild] Validating source URL:', {
-      protocol: parsedUrl.protocol,
-      hostname: parsedUrl.hostname,
-      pathname: parsedUrl.pathname,
-      search: parsedUrl.search,
-      fullUrl: finalUrl
+  // Ensure the URL is HTTPS
+  if (!sourceBlobUrl.startsWith('https://')) {
+    throw new Error('Invalid source URL: must use HTTPS protocol');
+  }
+  
+  // Log the URL for debugging (full URL in non-production)
+  if (process.env.NODE_ENV === 'production') {
+    const urlObj = new URL(sourceBlobUrl);
+    console.log('[createHerokuBuild] Creating build with source:', {
+      protocol: urlObj.protocol,
+      hostname: urlObj.hostname,
+      pathname: urlObj.pathname,
+      hasQueryParams: urlObj.search ? true : false,
+      queryParamsLength: urlObj.search ? urlObj.search.length : 0
     });
-    
-    // Ensure the URL points to a ZIP file
-    if (!parsedUrl.pathname.endsWith('.zip')) {
-      console.warn('[createHerokuBuild] Source URL does not end with .zip, this may cause issues');
-    }
-    
-    // Ensure the URL contains the bucket name
-    const bucketName = process.env.CF_R2_BUCKET_NAME;
-    if (bucketName && !parsedUrl.pathname.includes(bucketName)) {
-      console.warn(`[createHerokuBuild] Source URL path does not contain bucket name '${bucketName}'`);
-    }
-    
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    console.error('[createHerokuBuild] Invalid source URL:', errorMessage, { sourceBlobUrl });
-    throw new Error(`Invalid source URL format: ${errorMessage}`);
+  } else {
+    console.log(`[createHerokuBuild] Creating build with source: ${sourceBlobUrl}`);
   }
   
-  console.log(`[createHerokuBuild] Creating build for app ${appId} with source: ${finalUrl}`);
-
-  // Prepare the source_blob object
-  const sourceBlob: { url: string; version?: string } = {
-    url: finalUrl
-  };
-
-  // Add version if provided
-  if (version) {
-    sourceBlob.version = version;
+  // Ensure the URL points to a ZIP file
+  if (!sourceBlobUrl.toLowerCase().endsWith('.zip')) {
+    console.warn('[createHerokuBuild] Warning: Source URL does not end with .zip');
   }
-
-  console.log(`[createHerokuBuild] Creating build for app ${appId} with source URL: ${finalUrl}`);
+  
+  // Log bucket name presence for debugging (but don't expose the actual bucket name in logs)
+  const bucketName = process.env.CF_R2_BUCKET_NAME;
+  if (bucketName && !sourceBlobUrl.includes(bucketName)) {
+    console.warn('[createHerokuBuild] Warning: Source URL path does not contain expected bucket name');
+  }
   
   try {
-    const response = await herokuRequest<HerokuBuild>(`/apps/${appId}/builds`, {
+    // Create the build with the presigned URL
+    const build = await herokuRequest<HerokuBuild>(`/apps/${appId}/builds`, {
       method: 'POST',
-      body: JSON.stringify({ source_blob: sourceBlob }),
+      body: JSON.stringify({
+        source_blob: {
+          url: sourceBlobUrl, // Pass the presigned URL directly
+          version: version || '1.0.0'
+        }
+      })
     });
+
+    console.log(`[createHerokuBuild] Build created: ${build.id} (status: ${build.status})`);
+    return build;
+  } catch (error) {
+    // Create a safe log object without exposing sensitive URL parameters
+    const logData: Record<string, any> = { 
+      error: error instanceof Error ? error.message : 'Unknown error',
+      appId,
+      buildError: true
+    };
     
-    console.log(`Build created successfully: ${response.id}`);
-    return response;
-  } catch (error: unknown) {
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
-    console.error('Failed to create Heroku build:', error);
-    throw new Error(`Failed to create build: ${errorMessage}`);
+    try {
+      const urlObj = new URL(sourceBlobUrl);
+      logData.sourceHost = urlObj.hostname;
+      logData.sourcePath = urlObj.pathname;
+      logData.hasQueryParams = !!urlObj.search;
+    } catch (e) {
+      logData.sourceUrl = '[invalid-url]';
+    }
+    
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[createHerokuBuild] Error creating build:', { ...logData, errorMessage });
+    
+    // Include more details in the error message for common issues
+    let userFacingError = 'Failed to create build';
+    if (errorMessage.includes('404')) {
+      userFacingError = 'Source file not found. The presigned URL may have expired.';
+    } else if (errorMessage.includes('403')) {
+      userFacingError = 'Access denied to source file. The presigned URL may be invalid or expired.';
+    } else if (errorMessage.includes('timed out')) {
+      userFacingError = 'The request timed out. Please try again.';
+    } else if (errorMessage.includes('ENOTFOUND')) {
+      userFacingError = 'Could not resolve the source URL. Please check your network connection.';
+    }
+    
+    throw new Error(userFacingError);
   }
 }
 
@@ -302,107 +304,185 @@ export async function pollHerokuBuild(
   appId: string,
   buildId: string,
   intervalMs = 5000,
-  timeoutMs = 15 * 60 * 1000,
+  timeoutMs = 15 * 60 * 1000, // 15 minutes
   sourceBlobUrl?: string // Optional source URL for better error reporting
 ): Promise<HerokuBuild> {
   const startTime = Date.now();
-  let buildOutput = '';
   let lastStatus = '';
-
-  const buildUrl = `https://dashboard.heroku.com/apps/${appId}/activity/builds/${buildId}`;
+  let buildOutput = '';
+  let attempt = 0;
+  const maxAttempts = Math.ceil(timeoutMs / intervalMs);
+  let sourceUrl: URL | null = null;
   
-  // Log the build start with source URL if available
-  console.log(`Polling Heroku build ${buildId} for app ${appId}...`);
-  if (sourceBlobUrl) {
-    console.log(`Source URL: ${sourceBlobUrl}`);
+  try {
+    sourceUrl = sourceBlobUrl ? new URL(sourceBlobUrl) : null;
+  } catch (error) {
+    console.warn('[pollHerokuBuild] Invalid source URL provided:', error);
   }
 
-  while (Date.now() - startTime < timeoutMs) {
-    const build = await herokuRequest<HerokuBuild>(`/apps/${appId}/builds/${buildId}`);
-    
-    // Log status changes
-    if (build.status !== lastStatus) {
-      console.log(`Build status: ${lastStatus} → ${build.status}`);
-      lastStatus = build.status;
-    }
-    
-    // Try to get build output if available
-    if (build.output_stream_url) {
+  // Log build polling start with safe URL information
+  const logInfo: Record<string, any> = {
+    maxAttempts,
+    intervalMs,
+    buildId,
+    appId,
+    sourceHost: sourceUrl?.hostname || 'none',
+    sourcePath: sourceUrl?.pathname || 'none',
+    hasQueryParams: sourceUrl?.search ? true : false
+  };
+  
+  console.log('[pollHerokuBuild] Starting build polling:', logInfo);
+
+  try {
+    while (attempt < maxAttempts) {
+      attempt++;
+      const attemptStart = Date.now();
+      
       try {
-        const outputResponse = await fetch(build.output_stream_url);
-        if (outputResponse.ok) {
-          buildOutput = await outputResponse.text();
-          // Log the last few lines of output for debugging
-          const lines = buildOutput.split('\n').filter(Boolean);
-          if (lines.length > 0) {
-            console.log('Latest build output:', lines.slice(-5).join('\n'));
+        const build = await herokuRequest<HerokuBuild>(`/apps/${appId}/builds/${buildId}`);
+        
+        // Log status changes with timing information
+        if (build.status !== lastStatus) {
+          const elapsed = Math.round((Date.now() - startTime) / 1000);
+          console.log(`[pollHerokuBuild] Build ${buildId} status: ${lastStatus || 'initial'} -> ${build.status} (${elapsed}s)`);
+          lastStatus = build.status;
+        }
+
+        // If build is done (not pending), return the result or throw an error
+        if (build.status !== 'pending') {
+          if (build.status === 'succeeded') {
+            const elapsed = Math.round((Date.now() - startTime) / 1000);
+            console.log(`[pollHerokuBuild] Build ${buildId} completed successfully in ${elapsed}s`);
+            return build;
+          } else {
+            // Build failed or was cancelled
+            const elapsed = Math.round((Date.now() - startTime) / 1000);
+            console.error(`[pollHerokuBuild] Build ${buildId} failed after ${elapsed}s with status: ${build.status}`);
+            
+            // Try to get more detailed error information
+            if (build.output_stream_url) {
+              try {
+                console.log(`[pollHerokuBuild] Fetching build output from: ${build.output_stream_url}`);
+                const response = await fetch(build.output_stream_url);
+                if (response.ok) {
+                  buildOutput = await response.text();
+                  // Truncate very large outputs
+                  const maxOutputLength = 2000;
+                  const truncatedOutput = buildOutput.length > maxOutputLength 
+                    ? buildOutput.substring(0, maxOutputLength) + '... [truncated]' 
+                    : buildOutput;
+                  
+                  console.error(`[pollHerokuBuild] Build output (${buildOutput.length} chars):\n${truncatedOutput}`);
+                } else {
+                  console.error(`[pollHerokuBuild] Failed to fetch build output: ${response.status} ${response.statusText}`);
+                }
+              } catch (error) {
+                console.error('[pollHerokuBuild] Error fetching build output:', error);
+              }
+            } else {
+              console.log('[pollHerokuBuild] No build output URL available');
+            }
+            
+            const dashboardUrl = `https://dashboard.heroku.com/apps/${appId}/activity/builds/${buildId}`;
+            
+            // Create a detailed error message with troubleshooting info
+            const errorDetails: Record<string, string> = {
+              'Build Status': build.status,
+              'Build ID': buildId,
+              'App ID': appId,
+              'Elapsed Time': `${elapsed}s`,
+              'Dashboard': dashboardUrl
+            };
+            
+            if (sourceUrl) {
+              errorDetails['Source Path'] = sourceUrl.pathname;
+              errorDetails['Source Host'] = sourceUrl.hostname;
+            }
+            
+            // Get the last 100 lines of build output for the error message
+            const lastOutputLines = buildOutput 
+              ? buildOutput.split('\n').slice(-100).join('\n')
+              : 'No build output available';
+            
+            // Format the error message with troubleshooting guidance
+            const errorMessage = [
+              '🚨 Build failed with the following details:',
+              ...Object.entries(errorDetails).map(([key, value]) => `• ${key}: ${value}`),
+              '',
+              '🔍 Troubleshooting tips:',
+              '• Check if the presigned URL is still valid (they expire after 1 hour)',
+              '• Verify the source file exists in the storage bucket',
+              '• Ensure the Heroku app has network access to your storage service',
+              '• Check the build logs in the Heroku dashboard for more details',
+              '',
+              'Last 100 lines of build output:',
+              '```',
+              lastOutputLines,
+              '```',
+              `🔗 View full logs: ${dashboardUrl}`
+            ].join('\n');
+            
+            // Enhance error with additional context for common issues
+            let enhancedError = new Error(errorMessage);
+            const lowerOutput = lastOutputLines.toLowerCase();
+            
+            if (lowerOutput.includes('404') || lowerOutput.includes('not found')) {
+              enhancedError = new Error('Source file not found. The presigned URL may have expired or the file was deleted.');
+            } else if (lowerOutput.includes('403') || lowerOutput.includes('forbidden') || lowerOutput.includes('access denied')) {
+              enhancedError = new Error('Access denied to source file. The presigned URL may be invalid or expired.');
+            } else if (lowerOutput.includes('timeout') || lowerOutput.includes('timed out')) {
+              enhancedError = new Error('The build timed out while accessing the source file. Please try again.');
+            } else if (lowerOutput.includes('certificate') || lowerOutput.includes('ssl')) {
+              enhancedError = new Error('SSL certificate verification failed. Please check your storage service configuration.');
+            }
+            
+            // Preserve the original error details
+            (enhancedError as any).originalError = errorMessage;
+            throw enhancedError;
           }
         }
-      } catch (error) {
-        console.error('Error fetching build output:', error);
+      } finally {
+        // Wait for the next poll, even if there was an error
+        await new Promise((resolve) => setTimeout(resolve, intervalMs));
       }
     }
-
-    if (build.status === 'succeeded') {
-      console.log(`Build ${buildId} completed successfully`);
-      return build;
-    }
-
-    if (build.status === 'failed' || build.status === 'cancelled') {
-      // Try to get more detailed error information from the build output
-      let errorDetails = 'No additional error details available';
-      
-      if (buildOutput) {
-        // Look for error patterns in the build output
-        const errorMatch = buildOutput.match(/error:?\s+(.*)/i) || [];
-        if (errorMatch[1]) {
-          errorDetails = errorMatch[1].trim();
-        } else {
-          // If no specific error message, take the last few lines of output
-          const lines = buildOutput.split('\n').filter(Boolean);
-          errorDetails = lines.slice(-5).join('\n');
-        }
-      }
-      
-      const errorMessage = [
-        `❌ Heroku build ${build.status.toUpperCase()}`,
-        `Build ID: ${buildId}`,
-        `App: ${appId}`,
-        `Dashboard: ${buildUrl}`,
-        '',
-        'SOURCE CONFIGURATION:',
-        `Source URL: ${sourceBlobUrl || 'Not provided'}`,
-        '',
-        'ERROR DETAILS:',
-        errorDetails,
-        '',
-        'FULL BUILD OUTPUT:',
-        buildOutput || 'No build output available'
-      ].filter(Boolean).join('\n');
-      
-      console.error(`[pollHerokuBuild] Build failed: ${build.status}`, {
-        buildId,
-        appId,
-        sourceBlobUrl,
-        errorDetails: errorDetails.split('\n')[0] // First line of error for logs
-      });
-      
-      throw new Error(errorMessage);
-    }
-
-    // Wait for the next poll
-    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  } catch (error) {
+    // Log the error and rethrow it to be handled by the caller
+    console.error(`[pollHerokuBuild] Error polling build ${buildId}:`, error);
+    throw error;
   }
 
   // If we get here, we've timed out
+  const dashboardUrl = `https://dashboard.heroku.com/apps/${appId}/activity/builds/${buildId}`;
+  const sourceUrlObj = sourceBlobUrl ? new URL(sourceBlobUrl) : null;
+  
+  const errorDetails: Record<string, string> = {
+    'Build Status': 'timeout',
+    'Build ID': buildId,
+    'App ID': appId,
+    'Elapsed Time': `${timeoutMs / 1000}s`,
+    'Dashboard': dashboardUrl
+  };
+  
+  if (sourceUrlObj) {
+    errorDetails['Source Path'] = sourceUrlObj.pathname;
+    errorDetails['Source Host'] = sourceUrlObj.hostname;
+  }
+  
   const errorMessage = [
-    `Build timed out after ${timeoutMs / 1000} seconds.`,
-    `Build ID: ${buildId}`,
-    `Dashboard: ${buildUrl}`,
-    sourceBlobUrl ? `Source URL: ${sourceBlobUrl}` : '',
-    'Build output:',
-    buildOutput || 'No build output available'
-  ].filter(Boolean).join('\n');
+    'Build timed out with the following details:',
+    ...Object.entries(errorDetails).map(([key, value]) => `• ${key}: ${value}`),
+    '',
+    'Last 100 lines of build output:',
+    buildOutput ? buildOutput.split('\n').slice(-100).join('\n') : 'No build output available'
+  ].join('\n');
+  
+  console.error(`[pollHerokuBuild] Build timed out after ${timeoutMs / 1000}s`, {
+    buildId,
+    appId,
+    dashboardUrl,
+    hasSourceUrl: !!sourceBlobUrl
+  });
   
   throw new Error(errorMessage);
 }
@@ -445,129 +525,102 @@ export async function deployToHeroku({
   build?: HerokuBuild;
   webUrl?: string;
 }> {
+  // 1. Generate a direct download URL using the Cloudflare Worker
+  const workerUrl = `https://contexto-r2-proxy.your-account.workers.dev/exports/${userId}/${pipelineId}/mcp-pipeline.zip`;
+  console.log('[deployToHeroku] Using Cloudflare Worker URL:', workerUrl);
+  
   try {
-    // 1. Generate the download URL for the pipeline ZIP
-    console.log('[deployToHeroku] Generating download URL...');
-    const sourceBlobUrl = getPipelineDownloadUrl(userId, pipelineId);
-    
-    // Validate the download URL format
-    if (!/^https:\/\//.test(sourceBlobUrl)) {
-      throw new Error(`Invalid download URL format for Heroku build (must start with https://): ${sourceBlobUrl}`);
+    // Basic URL validation
+    if (!workerUrl.startsWith('https://')) {
+      throw new Error(`Invalid worker URL: ${workerUrl}`);
     }
     
-    // Parse the URL to verify all components
-    let parsedUrl: URL;
-    try {
-      parsedUrl = new URL(sourceBlobUrl);
-      console.log('[deployToHeroku] Validated download URL:', {
-        protocol: parsedUrl.protocol,
-        hostname: parsedUrl.hostname,
-        pathname: parsedUrl.pathname,
-        fullUrl: sourceBlobUrl
-      });
-    } catch (error) {
-      console.error('[deployToHeroku] Invalid URL format:', error);
-      throw new Error(`Invalid URL format for source blob: ${sourceBlobUrl}`);
-    }
-    
-    // Ensure the path includes the bucket name
-    if (!parsedUrl.pathname.includes(process.env.CF_R2_BUCKET_NAME || '')) {
-      console.warn('[deployToHeroku] Warning: URL path may be missing bucket name');
-    }
-    
-    // 2. Create a new Heroku app with a unique name based on pipelineId
-    console.log(`[deployToHeroku] Creating Heroku app for pipeline: ${pipelineId}`);
-    const app = await createHerokuApp(pipelineId);
+    // Store the URL in a variable with a clear name
+    const sourceBlobUrl = workerUrl;
+
+    // 2. Create a new Heroku app
+    console.log('[deployToHeroku] Creating Heroku app...');
+    const app = await createHerokuApp(appName);
     console.log(`[deployToHeroku] Created Heroku app: ${app.name} (${app.id})`);
-    
+
     try {
-      // 3. Set environment variables
+      // 3. Configure environment variables
       if (Object.keys(envVars).length > 0) {
         console.log('[deployToHeroku] Configuring environment variables...');
         await configureHerokuApp(app.id, envVars);
+        console.log('[deployToHeroku] Environment variables configured');
       }
+
+      // 4. Create a build using the presigned URL
+      console.log('[deployToHeroku] Creating build from source...');
       
-      // 4. Create and monitor build
-      let completedBuild: HerokuBuild;
-      try {
-        console.log(`[deployToHeroku] Creating Heroku build with source URL: ${sourceBlobUrl}`);
-        
-        // Final validation of the source URL
-        if (!sourceBlobUrl.startsWith('https://')) {
-          throw new Error(`FATAL: Invalid source URL format (missing https://): ${sourceBlobUrl}`);
-        }
-        
-        // Ensure the URL contains the bucket name
-        const bucketName = process.env.CF_R2_BUCKET_NAME;
-        if (bucketName && !sourceBlobUrl.includes(`/${bucketName}/`)) {
-          console.warn(`[deployToHeroku] WARNING: Source URL may be missing bucket name '${bucketName}' in path`);
-          console.warn(`[deployToHeroku] Expected format: https://<account>.r2.cloudflarestorage.com/${bucketName}/...`);
-        }
-        
-        // Create the build
-        const build = await createHerokuBuild({
-          appId: app.id,
-          sourceBlobUrl,
-          version: version || pipelineId
-        });
-        
-        console.log(`[deployToHeroku] Build created, monitoring status. Build ID: ${build.id}`);
-        
-        // Monitor the build status
-        completedBuild = await pollHerokuBuild(
-          app.id, 
-          build.id,
-          5000, // intervalMs
-          15 * 60 * 1000, // timeoutMs (15 minutes)
-          sourceBlobUrl // Pass source URL for better error reporting
-        );
-        
-        if (completedBuild.status !== 'succeeded') {
-          const errorMsg = [
-            `❌ Build failed with status: ${completedBuild.status}`,
-            `Build ID: ${build.id}`,
-            `App: ${app.name} (${app.id})`,
-            `Source URL: ${sourceBlobUrl}`,
-            `Dashboard: https://dashboard.heroku.com/apps/${app.id}/activity/builds/${build.id}`,
-            'Check the Heroku dashboard for detailed build logs.'
-          ].join('\n');
-          throw new Error(errorMsg);
-        }
-        
-      } catch (error) {
-        console.error('[deployToHeroku] Error during build process:', error);
-        
-        // Provide more helpful error messages for common issues
-        if (error instanceof Error) {
-          if (error.message.includes('Unable to fetch source from:')) {
-            throw new Error(
-              `❌ Heroku failed to download the source file.\n` +
-              `This usually happens when the URL is not publicly accessible or the path is incorrect.\n` +
-              `URL used: ${sourceBlobUrl}\n` +
-              `Make sure the URL is correct and the file is publicly accessible.`
-            );
+      // Log the URL being used (redacted in production)
+      console.log(`[deployToHeroku] Using source URL: ${sourceBlobUrl}`);
+      
+      // Create the build with the exact presigned URL string
+      const build = await herokuRequest<HerokuBuild>(`/apps/${app.id}/builds`, {
+        method: 'POST',
+        body: JSON.stringify({
+          source_blob: {
+            url: sourceBlobUrl,
+            version: version || pipelineId
           }
-          
-          if (error.message.includes('404 Not Found')) {
-            throw new Error(
-              `❌ The source file was not found at the specified URL.\n` +
-              `URL: ${sourceBlobUrl}\n` +
-              `Please verify the file exists and the URL is correct.`
-            );
+        })
+      });
+      
+      console.log(`[deployToHeroku] Build created with ID: ${build.id}`);
+      
+      console.log(`[deployToHeroku] Build created with ID: ${build.id}`);
+      
+      // 5. Monitor the build status
+      console.log(`[deployToHeroku] Monitoring build status for build ${build.id}...`);
+      const completedBuild = await pollHerokuBuild(
+        app.id,
+        build.id,
+        5000, // 5 second polling interval
+        15 * 60 * 1000, // 15 minute timeout
+        sourceBlobUrl // Pass the URL for error reporting
+      );
+
+      if (build.status === 'failed' || build.status === 'cancelled') {
+        let errorDetails = `Heroku build ${build.status}: ${build.id}\n`;
+        errorDetails += `App: ${app.id}\n`;
+        errorDetails += `Dashboard: https://dashboard.heroku.com/apps/${app.id}/activity/builds/${build.id}\n\n`;
+        
+        // Add source URL details
+        errorDetails += 'Source URL details:\n';
+        if (sourceBlobUrl) {
+          try {
+            const url = new URL(sourceBlobUrl);
+            errorDetails += `- URL: ${url.protocol}//${url.hostname}${url.pathname}\n`;
+            errorDetails += `- Has query params: ${!!url.search}\n`;
+            errorDetails += `- Expires: 1 hour from generation time\n`;
+          } catch (e) {
+            errorDetails += `- Invalid URL format\n`;
           }
-          
-          // Re-throw the error with additional context
-          throw new Error(`Deployment failed: ${error.message}`);
+        } else {
+          errorDetails += '- No source URL provided\n';
         }
         
-        // Re-throw the original error if we don't have a specific handler
-        throw error;
+        // Add troubleshooting steps
+        errorDetails += '\nTroubleshooting steps:\n';
+        errorDetails += '1. Verify the URL is accessible (run: curl -I "<url>")\n';
+        errorDetails += '2. Check if the presigned URL is still valid (expires in 1 hour)\n';
+        errorDetails += '3. Review Heroku build logs for detailed error messages\n';
+        errorDetails += '4. Ensure the R2 bucket and file permissions are correct\n';
+        
+        // Add the original error if available
+        if (build.error) {
+          errorDetails += `\nOriginal error: ${build.error}\n`;
+        }
+        
+        throw new Error(errorDetails);
       }
-      
-      // 5. Get the web URL
+
+      // 6. Get the app URL
       const webUrl = await getHerokuAppWebUrl(app.id);
-      console.log(`Deployment successful! App URL: ${webUrl}`);
-      
+      console.log(`[deployToHeroku] Deployment successful! App URL: ${webUrl}`);
+
       return {
         success: true,
         url: webUrl,
@@ -576,11 +629,42 @@ export async function deployToHeroku({
         build: completedBuild,
         webUrl
       };
-      
     } catch (error) {
-      // Log the error and include app info for cleanup
-      console.error('Deployment failed:', error);
-      console.warn(`App ${app.name} (${app.id}) may need to be cleaned up`);
+      // If we have an app but something failed, clean it up
+      if (app) {
+        console.error(`[deployToHeroku] Error during deployment, cleaning up app ${app.id}...`);
+        try {
+          await deleteHerokuApp(app.id);
+          console.log(`[deployToHeroku] Cleaned up app ${app.id}`);
+        } catch (cleanupError) {
+          console.error(`[deployToHeroku] Failed to clean up app ${app.id}:`, cleanupError);
+        }
+      }
+      
+      // Provide more helpful error messages for common issues
+      if (error instanceof Error) {
+        if (error.message.includes('Unable to fetch source from:')) {
+          throw new Error(
+            `❌ Heroku failed to download the source file.\n` +
+            `This usually happens when the URL is not publicly accessible or the path is incorrect.\n` +
+            `URL used: ${sourceBlobUrl}\n` +
+            `Make sure the URL is correct and the file is publicly accessible.`
+          );
+        }
+        
+        if (error.message.includes('404 Not Found')) {
+          throw new Error(
+            `❌ The source file was not found at the specified URL.\n` +
+            `URL: ${sourceBlobUrl}\n` +
+            `Please verify the file exists and the URL is correct.`
+          );
+        }
+        
+        // Re-throw the error with additional context
+        throw new Error(`Deployment failed: ${error.message}`);
+      }
+      
+      // Re-throw the original error if we don't have a specific handler
       throw error;
     }
   } catch (error) {
