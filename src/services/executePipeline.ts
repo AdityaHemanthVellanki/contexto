@@ -5,6 +5,7 @@ import { runIndexer } from './indexer';
 import { runRetriever } from './retriever';
 import { runRAGQuery } from './ragQuery';
 import { runOutput } from './output';
+import { getVectorIndex } from '@/lib/pinecone';
 
 /**
  * Graph interface representing the pipeline structure
@@ -61,24 +62,53 @@ export async function executePipeline(
     console.timeEnd('chunker');
     console.log(`Created ${chunks.length} text chunks`);
 
-    // Step 3: Embedder Node - Create embeddings for all chunks
-    console.log('Step 3: Embedder - Creating embeddings');
+    // Step 3: Embedder Node - Generate embeddings for chunks
+    console.log('Step 3: Embedder - Generating embeddings for chunks');
     console.time('embedder');
     const embeddings = await runEmbedder(chunks);
+    const questionEmbedding = await runEmbedder([question]);
     console.timeEnd('embedder');
     console.log(`Generated ${embeddings.length} embeddings`);
 
-    // Step 4: Indexer Node - Store embeddings and chunks
-    console.log('Step 4: Indexer - Storing embeddings and chunks');
+    // Step 4: Indexer Node - Store embeddings in vector store
+    console.log('Step 4: Indexer - Storing embeddings in vector store');
     console.time('indexer');
-    await runIndexer(fileId, embeddings, chunks);
+    
+    const vectorIndex = getVectorIndex();
+    const vectors = embeddings.map((embedding, i) => ({
+      id: `${fileId}-${i}`,
+      values: embedding,
+      metadata: {
+        content: chunks[i],
+        fileId: fileId,
+        chunkIndex: i,
+        text: chunks[i]
+      }
+    }));
+
+    await vectorIndex.upsert({
+      upsertRequest: {
+        vectors,
+        namespace: fileId,
+      }
+    });
+    
     console.timeEnd('indexer');
     console.log('Embeddings indexed successfully');
 
-    // Step 5: Retriever Node - Find relevant chunks for the question
-    console.log('Step 5: Retriever - Finding relevant chunks');
+    // Step 5: Retriever Node - Query vector store for relevant chunks
+    console.log('Step 5: Retriever - Querying vector store for relevant chunks');
     console.time('retriever');
-    const topChunks = await runRetriever(fileId, question, 5);
+    
+    const retrieverIndex = getVectorIndex();
+    const queryResponse = await retrieverIndex.query({
+      vector: questionEmbedding,
+      topK: 5,
+      includeMetadata: true,
+      namespace: fileId,
+    });
+    
+    const topChunks = queryResponse.matches?.map((match: any) => match.metadata?.content || '') || [];
     console.timeEnd('retriever');
     console.log(`Retrieved ${topChunks.length} relevant chunks`);
 

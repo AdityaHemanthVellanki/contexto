@@ -1,3 +1,4 @@
+import { Pinecone } from '@pinecone-database/pinecone';
 import { VectorDocument, VectorQueryResult, VectorStore } from './vectorStoreInterface';
 
 /**
@@ -8,7 +9,8 @@ export class PineconeVectorStore implements VectorStore {
   private indexName: string;
   private namespace: string;
   private dimensionSize: number;
-  private pineconeClient: any; // Would be properly typed in a real implementation
+  private pinecone: Pinecone;
+  private index: any;
 
   /**
    * Create a new PineconeVectorStore
@@ -16,11 +18,26 @@ export class PineconeVectorStore implements VectorStore {
    * @param dimensionSize Dimension size of embeddings (default: 1536 for OpenAI)
    */
   constructor(private pipelineId: string, dimensionSize: number = 1536) {
-    this.indexName = process.env.PINECONE_INDEX_NAME || 'contexto';
+    const API_KEY = process.env.PINECONE_API_KEY;
+    const ENVIRONMENT = process.env.PINECONE_ENVIRONMENT;
+    const INDEX_NAME = process.env.PINECONE_INDEX_NAME;
+
+    if (!API_KEY || !ENVIRONMENT || !INDEX_NAME) {
+      throw new Error(
+        'Missing Pinecone config: please set PINECONE_API_KEY, PINECONE_ENVIRONMENT, and PINECONE_INDEX_NAME'
+      );
+    }
+
+    this.indexName = INDEX_NAME;
     this.namespace = `pipeline-${pipelineId}`;
     this.dimensionSize = dimensionSize;
-    // In a real implementation, we would initialize the Pinecone client here
-    this.pineconeClient = null; // Placeholder
+    
+    // Initialize Pinecone client
+    this.pinecone = new Pinecone({
+      apiKey: API_KEY
+    });
+    
+    this.index = this.pinecone.index(this.indexName);
   }
 
   /**
@@ -48,13 +65,24 @@ export class PineconeVectorStore implements VectorStore {
     }
 
     try {
-      // In a real implementation, we would upsert the documents to Pinecone
-      console.log(`Upserting ${documents.length} documents to Pinecone index ${this.indexName} in namespace ${this.namespace}`);
-      return Promise.resolve();
+      // Prepare vectors for Pinecone
+      const vectors = documents.map(doc => ({
+        id: doc.id,
+        values: doc.values,
+        metadata: doc.metadata
+      }));
+
+      // Upsert vectors to Pinecone
+      await this.index.upsert({
+        vectors,
+        namespace: this.namespace
+      });
+
+      console.log(`Successfully upserted ${documents.length} documents to Pinecone`);
     } catch (error) {
-      console.error('Error upserting to Pinecone vector store:', error);
+      console.error('Error upserting documents to Pinecone:', error);
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      throw new Error(`Failed to upsert to Pinecone vector store: ${errorMessage}`);
+      throw new Error(`Failed to upsert documents to Pinecone: ${errorMessage}`);
     }
   }
 
@@ -71,20 +99,20 @@ export class PineconeVectorStore implements VectorStore {
     }
 
     try {
-      // In a real implementation, we would query Pinecone for similar vectors
-      console.log(`Querying Pinecone index ${this.indexName} in namespace ${this.namespace} for top ${topK} results`);
-      
-      // Return placeholder results
-      return Array(Math.min(topK, 3)).fill(null).map((_, i) => ({
-        id: `placeholder-${i}`,
-        score: 0.9 - (i * 0.1),
-        metadata: {
-          text: `Placeholder result ${i}`,
-          fileId: 'placeholder-file',
-          fileName: 'placeholder.txt',
-          chunkIndex: i
-        }
-      }));
+      const queryResponse = await this.index.query({
+        vector: embedding,
+        topK: topK,
+        includeMetadata: true,
+        namespace: this.namespace,
+        filter: filter
+      });
+
+      return queryResponse.matches?.map((match: any) => ({
+        id: match.id,
+        score: match.score,
+        content: match.metadata?.content || '',
+        metadata: match.metadata || {}
+      })) || [];
     } catch (error) {
       console.error('Error querying Pinecone vector store:', error);
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';

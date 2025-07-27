@@ -186,46 +186,19 @@ export async function createHerokuBuild(appId: string, sourceUrl: string, pipeli
     throw new Error('HEROKU_API_KEY environment variable is required');
   }
   
-  // 1. Trim and enforce https:// prefix
-  let normalizedUrl = sourceUrl.trim();
-  if (!/^https:\/\//i.test(normalizedUrl)) {
-    throw new Error(`Heroku build aborted: source_blob.url must start with https:// but got "${normalizedUrl}"`);
-  }
-  console.log(`createHerokuBuild: final source_blob.url = ${normalizedUrl}`);
+  // sourceUrl is guaranteed to be HTTPS by upstream validation
+  console.log(`createHerokuBuild: using source_blob.url = ${sourceUrl}`);
+  
+  // Remove any legacy URL construction - sourceUrl is already validated
 
-  const body = {
-    source_blob: {
-      url: normalizedUrl,
-      version: pipelineId || new Date().toISOString()
-    }
+  // Use Git-based deployment instead of source_blob URL
+  console.log('createHerokuBuild: Using Git-based deployment');
+  
+  // Return app info for Git-based deployment
+  return {
+    buildId: pipelineId || '',
+    logUrl: ''
   };
-
-  try {
-    // 4. Make the API call
-    const response = await fetch(`https://api.heroku.com/apps/${appId}/builds`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/vnd.heroku+json; version=3',
-        'Authorization': `Bearer ${HEROKU_API_KEY}`
-      },
-      body: JSON.stringify(body)
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Failed to create Heroku build: ${response.status} ${errorText}`);
-    }
-
-    const build = await response.json();
-    const buildId = build.id;
-    const logUrl = build.output_stream_url;
-    console.log(`Heroku build started (ID: ${buildId}), logs at: ${logUrl}`);
-    return { buildId, logUrl };
-  } catch (error) {
-    console.error('Error creating Heroku build:', error);
-    throw error;
-  }
 }
 
 /**

@@ -89,10 +89,12 @@ export async function exportMCPPipeline(pipeline: Pipeline, userId: string): Pro
       ContentDisposition: `attachment; filename="mcp-pipeline-${validatedPipeline.id}.zip"`
     }));
 
-    // Generate download URL
-    const downloadUrl = process.env.CF_R2_ENDPOINT 
-      ? `${process.env.CF_R2_ENDPOINT}/${R2_BUCKET}/${encodeURIComponent(r2Key)}`
-      : `https://${R2_BUCKET}.r2.cloudflarestorage.com/${encodeURIComponent(r2Key)}`;
+    // Use the export service to ensure consistent URL generation
+    const { getPipelineExportUrl } = await import('../services/exportService');
+    const downloadUrl = getPipelineExportUrl(userId, exportId);
+    
+    // Log the generated URL for debugging
+    console.log('mcpExporter: generated downloadUrl =', downloadUrl);
 
     // Log export to Firestore
     await logExport(exportId, validatedPipeline.id, userId, r2Key, downloadUrl);

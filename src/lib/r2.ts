@@ -41,6 +41,53 @@ if (endpoint.endsWith('/')) {
   endpoint = endpoint.slice(0, -1);
 }
 
+/**
+ * Generates a download URL for a pipeline ZIP file in Cloudflare R2
+ * @param userId The ID of the user who owns the pipeline
+ * @param fileId The ID of the file to download
+ * @returns A fully qualified HTTPS URL to download the pipeline ZIP
+ * @throws Error if required environment variables are not properly configured
+ */
+export function getPipelineDownloadUrl(userId: string, fileId: string): string {
+  const CF_R2_ENDPOINT = process.env.CF_R2_ENDPOINT;
+  const CF_R2_BUCKET_NAME = process.env.CF_R2_BUCKET_NAME;
+  
+  // Validate environment variables
+  if (!CF_R2_ENDPOINT?.startsWith('https://')) {
+    throw new Error('Missing or invalid CF_R2_ENDPOINT; must be full https:// URL');
+  }
+  
+  if (!CF_R2_BUCKET_NAME) {
+    throw new Error('Missing required CF_R2_BUCKET_NAME environment variable');
+  }
+  
+  // Remove any trailing slashes from the endpoint and bucket name
+  const base = CF_R2_ENDPOINT.replace(/\/+$/, '');
+  const bucket = CF_R2_BUCKET_NAME.replace(/^\/+|\/+$/g, '');
+  
+  // Construct the R2 object key (path in the bucket)
+  const objectKey = `users/${encodeURIComponent(userId)}/exports/${encodeURIComponent(fileId)}/mcp-pipeline.zip`;
+  
+  // Build the full URL with bucket in the path
+  const downloadUrl = `${base}/${bucket}/${objectKey}`;
+  
+  // Validate the final URL
+  if (!/^https:\/\//.test(downloadUrl)) {
+    throw new Error(`Invalid downloadUrl (must start with https://): ${downloadUrl}`);
+  }
+  
+  // Log the generated URL (without sensitive parts)
+  const safeUrl = new URL(downloadUrl);
+  console.log('exportService: Generated download URL:', {
+    hostname: safeUrl.hostname,
+    bucket,
+    objectKey,
+    fullUrl: downloadUrl // Be careful with logging full URLs in production
+  });
+  
+  return downloadUrl;
+}
+
 // Initialize R2 client with S3 compatibility and improved error handling
 export const r2 = new S3Client({
   region: "auto",
