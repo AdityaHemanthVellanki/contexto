@@ -5,7 +5,10 @@ import { runIndexer } from './indexer';
 import { runRetriever } from './retriever';
 import { runRAGQuery } from './ragQuery';
 import { runOutput } from './output';
+<<<<<<< HEAD
 import { getPineconeIndex } from '@/lib/pinecone';
+=======
+>>>>>>> parent of 4ebe2a0 (added heroku deployment for mcp)
 
 /**
  * Graph interface representing the pipeline structure
@@ -62,17 +65,17 @@ export async function executePipeline(
     console.timeEnd('chunker');
     console.log(`Created ${chunks.length} text chunks`);
 
-    // Step 3: Embedder Node - Generate embeddings for chunks
-    console.log('Step 3: Embedder - Generating embeddings for chunks');
+    // Step 3: Embedder Node - Create embeddings for all chunks
+    console.log('Step 3: Embedder - Creating embeddings');
     console.time('embedder');
     const embeddings = await runEmbedder(chunks);
-    const questionEmbedding = await runEmbedder([question]);
     console.timeEnd('embedder');
     console.log(`Generated ${embeddings.length} embeddings`);
 
-    // Step 4: Indexer Node - Store embeddings in vector store
-    console.log('Step 4: Indexer - Storing embeddings in vector store');
+    // Step 4: Indexer Node - Store embeddings and chunks
+    console.log('Step 4: Indexer - Storing embeddings and chunks');
     console.time('indexer');
+<<<<<<< HEAD
     
     const vectorIndex = getPineconeIndex();
     const vectors = embeddings.map((embedding, i) => ({
@@ -93,12 +96,16 @@ export async function executePipeline(
       }
     });
     
+=======
+    await runIndexer(fileId, embeddings, chunks);
+>>>>>>> parent of 4ebe2a0 (added heroku deployment for mcp)
     console.timeEnd('indexer');
     console.log('Embeddings indexed successfully');
 
-    // Step 5: Retriever Node - Query vector store for relevant chunks
-    console.log('Step 5: Retriever - Querying vector store for relevant chunks');
+    // Step 5: Retriever Node - Find relevant chunks for the question
+    console.log('Step 5: Retriever - Finding relevant chunks');
     console.time('retriever');
+<<<<<<< HEAD
     
     const retrieverIndex = getPineconeIndex();
     const queryResponse = await retrieverIndex.query({
@@ -109,6 +116,9 @@ export async function executePipeline(
     });
     
     const topChunks = queryResponse.matches?.map((match: any) => match.metadata?.content || '') || [];
+=======
+    const topChunks = await runRetriever(fileId, question, 5);
+>>>>>>> parent of 4ebe2a0 (added heroku deployment for mcp)
     console.timeEnd('retriever');
     console.log(`Retrieved ${topChunks.length} relevant chunks`);
 

@@ -43,6 +43,7 @@ if (endpoint.endsWith('/')) {
   endpoint = endpoint.slice(0, -1);
 }
 
+<<<<<<< HEAD
 // Initialize the R2 client
 let r2Client: S3Client | null = null;
 
@@ -202,6 +203,25 @@ export function getR2PublicUrl(key: string): string {
   // Fall back to default Cloudflare R2 public URL format
   return `https://${accountId}.r2.dev/${key.replace(/^\/+/, '')}`;
 }
+=======
+// Initialize R2 client with S3 compatibility and improved error handling
+export const r2 = new S3Client({
+  region: "auto",
+  endpoint,
+  credentials: {
+    accessKeyId: process.env.CF_R2_ACCESS_KEY_ID || 'missing-key-id',
+    secretAccessKey: process.env.CF_R2_SECRET_ACCESS_KEY || 'missing-secret-key',
+  },
+  // Add proper retries and timeouts with more generous limits
+  maxAttempts: 3,
+  requestHandler: new NodeHttpHandler({
+    connectionTimeout: 10000, // 10 seconds
+    socketTimeout: 30000,    // 30 seconds
+  }),
+  // Force path style for better compatibility with Cloudflare R2
+  forcePathStyle: true,
+});
+>>>>>>> parent of 4ebe2a0 (added heroku deployment for mcp)
 
 // Export bucket name for use in other modules
 export const R2_BUCKET = process.env.CF_R2_BUCKET_NAME || 'contexto-files';

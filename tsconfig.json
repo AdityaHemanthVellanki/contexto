@@ -13,7 +13,7 @@
     "noEmit": true,
     "esModuleInterop": true,
     "module": "esnext",
-    "moduleResolution": "node",
+    "moduleResolution": "bundler",
     "resolveJsonModule": true,
     "isolatedModules": true,
     "jsx": "preserve",
@@ -28,8 +28,8 @@
         "name": "next"
       }
     ],
-    "baseUrl": ".",
     "paths": {
+<<<<<<< HEAD
       "@/*": [
         "./src/*"
       ],
@@ -43,6 +43,10 @@
       "./src/types",
       "./env.d.ts"
     ]
+=======
+      "@/*": ["./src/*"]
+    }
+>>>>>>> parent of 4ebe2a0 (added heroku deployment for mcp)
   },
   "include": [
     "next-env.d.ts",
