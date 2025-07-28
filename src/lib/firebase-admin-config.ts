@@ -6,8 +6,10 @@
  * environment variables are not available.
  */
 
-// Standard server-side environment variables (preferred)
-export interface FirebaseAdminConfig {
+import { getServerEnv } from './env-utils';
+import admin from 'firebase-admin';
+
+interface FirebaseAdminConfig {
   projectId: string;
   clientEmail: string;
   privateKey: string;
@@ -15,61 +17,85 @@ export interface FirebaseAdminConfig {
   useEmulator?: boolean;
 }
 
-export const getFirebaseAdminConfig = (): FirebaseAdminConfig => {
-  // Use explicit server-side config if available
-  if (process.env.FIREBASE_PROJECT_ID && 
-      process.env.FIREBASE_CLIENT_EMAIL && 
-      process.env.FIREBASE_PRIVATE_KEY) {
-    return {
-      projectId: process.env.FIREBASE_PROJECT_ID,
-      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-      privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
-      storageBucket: process.env.FIREBASE_STORAGE_BUCKET,
-    };
+type EnvVars = ReturnType<typeof getServerEnv>;
+
+function getRequiredEnvVar<K extends keyof EnvVars>(key: K): string {
+  const value = getServerEnv()[key];
+  if (value === undefined || value === '') {
+    throw new Error(`Missing required environment variable: ${String(key)}`);
   }
+  return String(value);
+}
+
+export const getFirebaseAdminConfig = (): FirebaseAdminConfig => {
+  const env = getServerEnv();
   
-  // If FIREBASE_ADMIN_CREDENTIALS is provided as a JSON string, use that
-  if (process.env.FIREBASE_ADMIN_CREDENTIALS) {
+  // Try to use FIREBASE_ADMIN_CREDENTIALS if available
+  if (env.FIREBASE_ADMIN_CREDENTIALS) {
     try {
-      const credentials = JSON.parse(process.env.FIREBASE_ADMIN_CREDENTIALS);
+      const credentials = JSON.parse(env.FIREBASE_ADMIN_CREDENTIALS);
+      const projectId = credentials.project_id || credentials.projectId;
+      const clientEmail = credentials.client_email || credentials.clientEmail;
+      const privateKey = credentials.private_key || credentials.privateKey;
+      
+      if (!projectId || !clientEmail || !privateKey) {
+        throw new Error('Missing required fields in FIREBASE_ADMIN_CREDENTIALS');
+      }
+      
       return {
-        projectId: credentials.project_id || credentials.projectId,
-        clientEmail: credentials.client_email || credentials.clientEmail,
-        privateKey: credentials.private_key || credentials.privateKey,
-        storageBucket: credentials.storage_bucket || credentials.storageBucket,
+        projectId,
+        clientEmail,
+        privateKey: privateKey.replace(/\\\\n/g, '\\n'),
+        storageBucket: env.FIREBASE_STORAGE_BUCKET,
+        useEmulator: env.NODE_ENV === 'development',
       };
     } catch (error) {
       console.error('Error parsing FIREBASE_ADMIN_CREDENTIALS:', error);
+      throw new Error('Invalid FIREBASE_ADMIN_CREDENTIALS environment variable');
     }
   }
-  
-  // Fall back to client-side config for project ID
-  // NOTE: This requires setting up a service account separately
-  // This is a fallback to at least get the project ID
-  if (process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID) {
+
+  // Fall back to individual environment variables
+  try {
+    const projectId = getRequiredEnvVar('FIREBASE_PROJECT_ID');
+    const clientEmail = getRequiredEnvVar('FIREBASE_CLIENT_EMAIL');
+    const privateKey = getRequiredEnvVar('FIREBASE_PRIVATE_KEY');
+    
     return {
-      projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
-      clientEmail: process.env.FIREBASE_CLIENT_EMAIL || '',
-      privateKey: process.env.FIREBASE_PRIVATE_KEY || '',
-      useEmulator: process.env.NODE_ENV === 'development',
+      projectId,
+      clientEmail,
+      privateKey: privateKey.replace(/\\\\n/g, '\\n'),
+      storageBucket: env.FIREBASE_STORAGE_BUCKET,
+      useEmulator: env.NODE_ENV === 'development',
     };
+  } catch (error) {
+    throw new Error(
+      'Missing required Firebase Admin configuration. ' +
+      'Please set either FIREBASE_ADMIN_CREDENTIALS or the individual ' +
+      'FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL, and FIREBASE_PRIVATE_KEY variables. ' +
+      `Error: ${error instanceof Error ? error.message : String(error)}`
+    );
   }
-  
-  // Last resort: return empty config and let the application handle the error
-  const projectId = '';
-  const clientEmail = '';
-  const privateKey = '';
-  const storageBucket = process.env.FIREBASE_STORAGE_BUCKET || 
-                        (projectId ? `${projectId}.appspot.com` : undefined) ||
-                        process.env.CF_R2_BUCKET_NAME || // Try to use R2 bucket as fallback
-                        'contexto-uploads';
-
-  console.log(`Firebase Storage Bucket: ${storageBucket}`);
-
-  return {
-    projectId,
-    clientEmail,
-    privateKey,
-    storageBucket,
-  };
 };
+
+// Initialize Firebase Admin SDK
+const adminApp = (() => {
+  try {
+    const config = getFirebaseAdminConfig();
+    return admin.initializeApp({
+      credential: admin.credential.cert({
+        projectId: config.projectId,
+        clientEmail: config.clientEmail,
+        privateKey: config.privateKey,
+      }),
+      storageBucket: config.storageBucket,
+    });
+  } catch (error) {
+    console.error('Failed to initialize Firebase Admin SDK:', error);
+    throw error;
+  }
+})();
+
+export const adminDb = admin.firestore();
+export const adminStorage = admin.storage();
+export const adminAuth = admin.auth();

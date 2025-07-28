@@ -1,6 +1,8 @@
 name = "contexto-r2-proxy"
-main = "src/index.ts"
 compatibility_date = "2025-07-27"
+main = "workers/src/index.ts"
+
+
 
 # Development environment (local testing)
 [dev]
@@ -11,6 +13,7 @@ port = 8787
 name = "contexto-r2-proxy"
 route = ""
 workers_dev = true
+account_id = "6b27b002d3acc4819fcfeb5a72abc996"
 
 # Production environment variables (set via `wrangler secret put` in production)
 # These should be set in the Cloudflare dashboard or via CLI:

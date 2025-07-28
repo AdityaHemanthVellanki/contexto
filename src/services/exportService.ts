@@ -1,16 +1,26 @@
-import { S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
-import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { v4 as uuidv4 } from 'uuid';
+import { getServerEnv } from '@/lib/env';
+
+// Get environment variables
+const env = getServerEnv();
 
 // Initialize S3 client for Cloudflare R2
-const s3 = new S3Client({
-  endpoint: process.env.CF_R2_ENDPOINT!,
-  region: "auto",
+if (!env.R2_ACCESS_KEY_ID || !env.R2_SECRET_ACCESS_KEY || !env.R2_PUBLIC_URL || !env.CF_R2_BUCKET_NAME) {
+  throw new Error('Missing required R2 configuration in environment variables');
+}
+
+const s3Client = new S3Client({
+  region: 'auto',
+  endpoint: env.R2_PUBLIC_URL,
   credentials: {
-    accessKeyId: process.env.CF_R2_ACCESS_KEY_ID!,
-    secretAccessKey: process.env.CF_R2_SECRET_ACCESS_KEY!
-  },
-  forcePathStyle: true
+    accessKeyId: env.R2_ACCESS_KEY_ID,
+    secretAccessKey: env.R2_SECRET_ACCESS_KEY
+  }
 });
+
+const BUCKET_NAME = env.CF_R2_BUCKET_NAME;
 
 /**
  * Generates a presigned URL for downloading a pipeline export
@@ -21,7 +31,7 @@ const s3 = new S3Client({
  * @throws Error if the URL cannot be generated or if required environment variables are missing
  */
 export async function getPipelineExportUrl(userId: string, fileId: string): Promise<string> {
-  const bucket = process.env.CF_R2_BUCKET_NAME;
+  const bucket = BUCKET_NAME;
   if (!bucket) {
     throw new Error('CF_R2_BUCKET_NAME environment variable is not set');
   }
@@ -31,7 +41,7 @@ export async function getPipelineExportUrl(userId: string, fileId: string): Prom
   
   try {
     // Generate a presigned URL that's valid for 1 hour
-    const url = await getSignedUrl(s3, command, { expiresIn: 3600 });
+    const url = await getSignedUrl(s3Client, command, { expiresIn: 3600 });
     
     // Log the full URL in development, minimal info in production
     if (process.env.NODE_ENV === 'production') {

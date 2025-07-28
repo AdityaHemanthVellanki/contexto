@@ -77,51 +77,22 @@ async function createPineconeIndex(pipelineId: string): Promise<string> {
 
 // Qdrant collection creation
 async function createQdrantCollection(pipelineId: string): Promise<string> {
-  const apiKey = process.env.QDRANT_API_KEY;
-  const url = process.env.QDRANT_URL;
+  const { apiKey, url } = await getQdrantConfig();
   
-  if (!apiKey || !url) {
-    throw new Error('Qdrant credentials not configured');
-  }
+  const client = new QdrantClient({
+    url,
+    apiKey,
+  });
 
   const collectionName = `contexto-${pipelineId}`.toLowerCase().replace(/[^a-z0-9-]/g, '-');
   
   try {
-    // Check if collection already exists
-    const getResponse = await fetch(`${url}/collections/${collectionName}`, {
-      headers: {
-        'api-key': apiKey,
-        'Content-Type': 'application/json'
-      }
-    });
-
-    if (getResponse.ok) {
-      return `${url}/collections/${collectionName}`;
-    }
-
-    // Create new collection
-    const createResponse = await fetch(`${url}/collections/${collectionName}`, {
-      method: 'PUT',
-      headers: {
-        'api-key': apiKey,
-        'Content-Type': 'application/json'
+    await client.createCollection(collectionName, {
+      vectors: {
+        size: 1536, // OpenAI embedding dimension
+        distance: 'Cosine',
       },
-      body: JSON.stringify({
-        vectors: {
-          size: 1536, // OpenAI embedding dimension
-          distance: 'Cosine'
-        },
-        optimizers_config: {
-          default_segment_number: 2
-        },
-        replication_factor: 1
-      })
     });
-
-    if (!createResponse.ok) {
-      const error = await createResponse.text();
-      throw new Error(`Qdrant collection creation failed: ${error}`);
-    }
 
     return `${url}/collections/${collectionName}`;
   } catch (error) {
@@ -132,13 +103,10 @@ async function createQdrantCollection(pipelineId: string): Promise<string> {
 
 // Supabase table creation
 async function createSupabaseTable(pipelineId: string): Promise<string> {
-  const url = process.env.SUPABASE_URL;
-  const serviceKey = process.env.SUPABASE_SERVICE_KEY;
+  const { url, serviceKey } = await getSupabaseConfig();
   
-  if (!url || !serviceKey) {
-    throw new Error('Supabase credentials not configured');
-  }
-
+  const supabase = createClient(url, serviceKey);
+  
   const tableName = `contexto_${pipelineId}`.toLowerCase().replace(/[^a-z0-9_]/g, '_');
   
   try {
@@ -266,7 +234,7 @@ export async function POST(request: NextRequest) {
     console.log(`Selected vector store: ${vectorStoreConfig.type} for pipeline ${pipelineId}`);
 
     let vectorStoreEndpoint: string;
-    let storeType: string = vectorStoreConfig.type;
+    const storeType: string = vectorStoreConfig.type;
 
     // Provision vector store based on type
     try {

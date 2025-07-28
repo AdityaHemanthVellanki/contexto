@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { r2, R2_BUCKET } from './r2';
+import { getR2Client, R2_BUCKET } from './r2';
 import { PutObjectCommand } from '@aws-sdk/client-s3';
 import JSZip from 'jszip';
 
@@ -31,6 +31,13 @@ const PipelineSchema = z.object({
 
 type Pipeline = z.infer<typeof PipelineSchema>;
 
+type ServerEnv = {
+  env: {
+    NODE_ENV: 'development' | 'production';
+    cwd?: string;
+  };
+};
+
 /**
  * Export MCP pipeline as a downloadable ZIP package
  */
@@ -58,7 +65,7 @@ export async function exportMCPPipeline(pipeline: Pipeline, userId: string): Pro
     // 4. Add vectorStoreClient.js
     const fs = require('fs');
     const path = require('path');
-    const vectorStoreClientPath = path.join(process.cwd(), 'src', 'lib', 'templates', 'vectorStoreClient.js');
+    const vectorStoreClientPath = path.join(__dirname, 'templates', 'vectorStoreClient.js');
     const vectorStoreClient = fs.readFileSync(vectorStoreClientPath, 'utf8');
     zip.file('vectorStoreClient.js', vectorStoreClient);
 
@@ -81,13 +88,20 @@ export async function exportMCPPipeline(pipeline: Pipeline, userId: string): Pro
     const exportId = `${userId}_${Date.now()}`;
     const r2Key = `users/${userId}/exports/${exportId}/mcp-pipeline.zip`;
 
-    await r2.send(new PutObjectCommand({
+    const client = getR2Client();
+    if (!client) {
+      throw new Error('R2 client not initialized');
+    }
+    
+    const command = new PutObjectCommand({
       Bucket: R2_BUCKET,
       Key: r2Key,
       Body: zipBuffer,
       ContentType: 'application/zip',
       ContentDisposition: `attachment; filename="mcp-pipeline-${validatedPipeline.id}.zip"`
-    }));
+    });
+    
+    const result = await client.send(command);
 
     // Use the export service to generate a presigned URL
     const { getPipelineExportUrl } = await import('../services/exportService');
@@ -266,6 +280,10 @@ class MCPPipelineServer {
   }
 
   chunkText(text, chunkSize) {
+    const client = getR2Client();
+    if (!client) {
+      throw new Error('R2 client not initialized');
+    }
     const chunks = [];
     const overlap = Math.floor(chunkSize * 0.1);
     
@@ -305,6 +323,7 @@ if (require.main === module) {
 
 module.exports = MCPPipelineServer;
 `;
+
 }
 
 /**

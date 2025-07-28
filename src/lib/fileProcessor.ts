@@ -86,7 +86,7 @@ export async function processFile(
  */
 async function processPDF(buffer: Buffer): Promise<string> {
   // Track the original working directory so we can restore it later
-  let originalCwd = process.cwd();
+  const originalCwd = process.cwd();
   let tempDir = '';
   
   try {

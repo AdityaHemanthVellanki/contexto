@@ -30,3 +30,15 @@ export async function getUserFromToken(token: string) {
     throw new Error('Failed to authenticate user');
   }
 }
+
+export const authOptions = {
+  providers: [],
+  callbacks: {
+    session: async ({ session, token }: { session: any; token: any }) => {
+      if (token) {
+        session.user = token.user;
+      }
+      return session;
+    },
+  },
+};

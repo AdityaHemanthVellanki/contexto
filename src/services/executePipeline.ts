@@ -5,7 +5,7 @@ import { runIndexer } from './indexer';
 import { runRetriever } from './retriever';
 import { runRAGQuery } from './ragQuery';
 import { runOutput } from './output';
-import { getVectorIndex } from '@/lib/pinecone';
+import { getPineconeIndex } from '@/lib/pinecone';
 
 /**
  * Graph interface representing the pipeline structure
@@ -74,7 +74,7 @@ export async function executePipeline(
     console.log('Step 4: Indexer - Storing embeddings in vector store');
     console.time('indexer');
     
-    const vectorIndex = getVectorIndex();
+    const vectorIndex = getPineconeIndex();
     const vectors = embeddings.map((embedding, i) => ({
       id: `${fileId}-${i}`,
       values: embedding,
@@ -100,7 +100,7 @@ export async function executePipeline(
     console.log('Step 5: Retriever - Querying vector store for relevant chunks');
     console.time('retriever');
     
-    const retrieverIndex = getVectorIndex();
+    const retrieverIndex = getPineconeIndex();
     const queryResponse = await retrieverIndex.query({
       vector: questionEmbedding,
       topK: 5,
@@ -142,4 +142,3 @@ export async function executePipeline(
   }
 }
               // Run RAG query with context and prompt
-

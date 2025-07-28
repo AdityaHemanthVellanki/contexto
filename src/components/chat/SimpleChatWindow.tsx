@@ -485,6 +485,65 @@ export default function SimpleChatWindow({ chatId }: SimpleChatWindowProps) {
     </motion.div>
   );
 
+  const deployVectorStore = async (fileId: string, storeType: string) => {
+    if (!user) return;
+
+    try {
+      const result = await fetch('/api/deployVectorStore', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${await getAuth(app).currentUser?.getIdToken()}`,
+        },
+        body: JSON.stringify({ fileId, storeType }),
+      });
+
+      if (!result.ok) {
+        throw new Error((await result.json()).error || 'Vector store deployment failed');
+      }
+
+      return await result.json();
+    } catch (error) {
+      console.error('Vector store deployment error:', error);
+      throw error;
+    }
+  };
+
+  const handleVectorStoreDeployment = async (fileId: string, storeType: string) => {
+    try {
+      const result = await deployVectorStore(fileId, storeType);
+
+      if (result.success) {
+        setMessages(prev => [
+          ...prev,
+          {
+            id: `vector-store-${Date.now()}`,
+            type: 'ai',
+            content: `Vector store created successfully!\n\n**Index Name**: ${result.indexName}`,
+          }
+        ]);
+      } else {
+        setMessages(prev => [
+          ...prev,
+          {
+            id: `vector-store-error-${Date.now()}`,
+            type: 'ai',
+            content: `Vector store creation failed: ${result.error}`,
+          }
+        ]);
+      }
+    } catch (error) {
+      setMessages(prev => [
+        ...prev,
+        {
+          id: `vector-store-error-${Date.now()}`,
+          type: 'ai',
+          content: `Vector store creation failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        }
+      ]);
+    }
+  };
+
   return (
     <div className="flex flex-col h-screen bg-white dark:bg-black">
       {/* Header */}

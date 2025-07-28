@@ -143,3 +143,17 @@ export const NODE_DESCRIPTIONS: Record<NodeType, string> = {
   Retriever: 'Searches and retrieves relevant chunks based on queries',
   RAG: 'Generates responses using retrieved context and language models'
 };
+
+/**
+ * Pipeline execution data
+ */
+export interface PipelineData {
+  id: string;
+  status: 'pending' | 'running' | 'completed' | 'failed';
+  createdAt: string;
+  steps: {
+    name: string;
+    status: 'pending' | 'running' | 'completed' | 'failed';
+    logs: string[];
+  }[];
+}

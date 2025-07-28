@@ -7,8 +7,7 @@ import { rateLimit } from '@/lib/rate-limiter-memory';
 import { authenticateRequest } from '@/lib/api-auth';
 import { createEmbeddings } from '@/lib/embeddings';
 import { generateChatResponse } from '@/services/azure-openai-server';
-import { r2, R2_BUCKET } from '@/lib/r2';
-import { GetObjectCommand } from '@aws-sdk/client-s3';
+import { r2Client, R2_BUCKET, GetObjectCommand } from '@/lib/r2';
 import { processFile } from '@/lib/fileProcessor';
 import { exportMCPPipeline } from '@/lib/mcpExporter';
 
@@ -129,7 +128,10 @@ export async function POST(request: NextRequest) {
         Key: uploadData.r2Key
       });
       
-      const response = await r2.send(getObjectCommand);
+      if (!r2Client) {
+        throw new Error('R2 client not initialized');
+      }
+      const response = await r2Client.send(getObjectCommand);
       const chunks: Uint8Array[] = [];
       
       if (response.Body) {

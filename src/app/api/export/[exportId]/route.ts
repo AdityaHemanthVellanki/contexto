@@ -3,8 +3,8 @@ import { initializeFirebaseAdmin } from '@/lib/firebase-admin-init';
 import { getFirebaseAuth } from '@/lib/firebase-admin-init';
 import { authenticateRequest } from '@/lib/api-auth';
 import { rateLimit } from '@/lib/rate-limiter-memory';
-import { r2, R2_BUCKET } from '@/lib/r2';
-import { GetObjectCommand, S3ServiceException } from '@aws-sdk/client-s3';
+import { getR2Client } from '@/lib/r2';
+import { GetObjectCommand } from '@aws-sdk/client-s3';
 
 // Initialize Firebase Admin SDK at module load time
 // This ensures Firebase is ready before any requests are processed
@@ -84,42 +84,27 @@ export async function GET(
         console.log(`Retrieving export from R2 with key: ${exportData.r2Key}`);
         
         // Fetch from Cloudflare R2
-        const r2Response = await r2.send(
-          new GetObjectCommand({
-            Bucket: R2_BUCKET,
-            Key: exportData.r2Key
-          })
-        );
-        
-        // Check if we got a valid response with a body
-        if (!r2Response.Body) {
-          console.error('R2 response missing Body for key:', exportData.r2Key);
-          throw new Error('Export file not found in storage');
+        const client = getR2Client();
+        if (!client) {
+          return NextResponse.json({ error: 'R2 client not configured' }, { status: 500 });
         }
         
-        // Stream the response body to a buffer
-        const streamToBuffer = (stream: any): Promise<Buffer> =>
-          new Promise((resolve, reject) => {
-            const chunks: Buffer[] = [];
-            stream.on('data', (chunk: Buffer) => chunks.push(chunk));
-            stream.on('error', (err: Error) => {
-              console.error('Error streaming R2 data:', err);
-              reject(err);
-            });
-            stream.on('end', () => resolve(Buffer.concat(chunks)));
-          });
-          
-        const fileBuffer = await streamToBuffer(r2Response.Body);
-        console.log(`Retrieved ${fileBuffer.length} bytes from R2 storage`);
-        
-        // Convert to base64 for client consumption
-        const base64Content = fileBuffer.toString('base64');
-        
-        // Return the export data with the content
-        const response = NextResponse.json({
-          ...exportData,
-          exportContent: base64Content,
-          fromR2: true
+        const command = new GetObjectCommand({
+          Bucket: process.env.CF_R2_BUCKET_NAME,
+          Key: `exports/${exportId}.zip`,
+        });
+
+        const { Body } = await client.send(command);
+        if (!Body) {
+          return NextResponse.json({ error: 'Export not found' }, { status: 404 });
+        }
+
+        const blob = await Body.transformToByteArray();
+        const response = new NextResponse(blob, {
+          headers: {
+            'Content-Type': 'application/zip',
+            'Content-Disposition': `attachment; filename="${exportId}.zip"`,
+          },
         });
         
         // Add rate limit headers to response
@@ -134,8 +119,8 @@ export async function GET(
         console.error('Error retrieving export from R2:', error);
         
         // Check for specific R2/S3 errors
-        if (error instanceof S3ServiceException) {
-          console.error('S3 Service Exception:', error.name, error.message);
+        if (error instanceof Error) {
+          console.error('Error:', error.name, error.message);
           
           // Check for common S3 errors
           if (error.name === 'NoSuchKey') {

@@ -1,15 +1,16 @@
 import { useState } from 'react';
 import { useToast } from '@/components/ui/use-toast';
+import { DeploymentData } from '@/types/deployment';
 
 interface UseDeploymentOptions {
-  onSuccess?: (data: any) => void;
+  onSuccess?: (data: DeploymentData) => void;
   onError?: (error: Error) => void;
 }
 
 export function useDeployment({ onSuccess, onError }: UseDeploymentOptions = {}) {
   const [isDeploying, setIsDeploying] = useState(false);
   const [deploymentId, setDeploymentId] = useState<string | null>(null);
-  const [deploymentData, setDeploymentData] = useState<any>(null);
+  const [deploymentData, setDeploymentData] = useState<DeploymentData | null>(null);
   const { toast } = useToast();
 
   const deploy = async (pipelineId: string, fileId?: string, envVars: Record<string, string> = {}) => {
@@ -33,14 +34,20 @@ export function useDeployment({ onSuccess, onError }: UseDeploymentOptions = {})
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        throw new Error(
-          errorData.error || `Deployment failed with status ${response.status}`
-        );
+        const errorMessage = typeof errorData === 'object' && errorData !== null && 'error' in errorData
+          ? String(errorData.error)
+          : `Deployment failed with status ${response.status}`;
+        throw new Error(errorMessage);
       }
 
-      const data = await response.json();
-      setDeploymentId(data.deploymentId || null);
-      setDeploymentData(data);
+      // Ensure response data matches DeploymentData
+      const data: DeploymentData = await response.json();
+      if (data) {
+        setDeploymentId(data.deploymentId || null);
+        setDeploymentData(data);
+      } else {
+        console.error('Invalid deployment data:', data);
+      }
       
       if (onSuccess) {
         onSuccess(data);

@@ -18,11 +18,11 @@ export class PineconeVectorStore implements VectorStore {
    * @param dimensionSize Dimension size of embeddings (default: 1536 for OpenAI)
    */
   constructor(private pipelineId: string, dimensionSize: number = 1536) {
-    const API_KEY = process.env.PINECONE_API_KEY;
-    const ENVIRONMENT = process.env.PINECONE_ENVIRONMENT;
+    const apiKey = process.env.PINECONE_API_KEY;
+    const environment = process.env.PINECONE_ENVIRONMENT;
     const INDEX_NAME = process.env.PINECONE_INDEX_NAME;
 
-    if (!API_KEY || !ENVIRONMENT || !INDEX_NAME) {
+    if (!apiKey || !environment || !INDEX_NAME) {
       throw new Error(
         'Missing Pinecone config: please set PINECONE_API_KEY, PINECONE_ENVIRONMENT, and PINECONE_INDEX_NAME'
       );
@@ -34,10 +34,11 @@ export class PineconeVectorStore implements VectorStore {
     
     // Initialize Pinecone client
     this.pinecone = new Pinecone({
-      apiKey: API_KEY
+      apiKey,
+      environment
     });
     
-    this.index = this.pinecone.index(this.indexName);
+    this.index = this.pinecone.Index(this.indexName);
   }
 
   /**

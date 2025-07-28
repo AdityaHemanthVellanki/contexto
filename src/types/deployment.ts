@@ -24,3 +24,20 @@ export interface VectorStoreConfig {
 export interface DeploymentEnvVars {
   [key: string]: string;
 }
+
+/**
+ * Deployment status data
+ */
+export interface DeploymentData {
+  id: string;
+  deploymentId?: string;
+  status: 'pending' | 'building' | 'deploying' | 'success' | 'failed';
+  createdAt: string;
+  updatedAt: string;
+  logs?: string[];
+  url?: string;
+  webUrl?: string;
+  appName?: string;
+  buildId?: string;
+  error?: string;
+}

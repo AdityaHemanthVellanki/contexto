@@ -4,10 +4,12 @@ Contexto is a powerful chat-driven interface for building and deploying MCP (Mod
 
 ## Features
 
-- 🚀 **One-click deployment** to Heroku
+- ☁️ **Serverless deployment** on Cloudflare Workers
+- 📦 **R2 Storage** for file uploads and exports
 - 💬 **Chat-driven interface** for pipeline creation
-- 🔄 **Real-time status updates** for deployments
+- ⚡ **Edge-optimized** for global low-latency
 - 🔒 **Secure authentication** with Firebase
+- 🔄 **Real-time processing** with Cloudflare Workers
 - 📦 **Built-in vector store** support (Pinecone, Qdrant, Supabase)
 - 🤖 **Azure OpenAI** integration for embeddings and chat
 

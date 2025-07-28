@@ -1,0 +1,36 @@
+name = "contexto-api"
+main = "functions"
+compatibility_date = "2025-07-27"
+workers_dev = true
+
+[site]
+bucket = "dist"
+
+[vars]
+AZURE_OPENAI_KEY = ""
+AZURE_OPENAI_ENDPOINT = ""
+AZURE_OPENAI_DEPLOYID = ""
+PINECONE_API_KEY = ""
+PINECONE_ENV = ""
+
+[[r2_buckets]]
+binding = "UPLOADS"
+bucket_name = "contexto-uploads"
+
+[build]
+command = "npm run build"
+
+[build.upload]
+format = "service-worker"
+
+[env.production]
+name = "contexto-api"
+route = ""
+workers_dev = true
+
+# These secrets need to be set via:
+# wrangler secret put AZURE_OPENAI_KEY
+# wrangler secret put AZURE_OPENAI_ENDPOINT
+# wrangler secret put AZURE_OPENAI_DEPLOYID
+# wrangler secret put PINECONE_API_KEY
+# wrangler secret put PINECONE_ENV

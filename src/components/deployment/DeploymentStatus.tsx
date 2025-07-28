@@ -2,30 +2,21 @@ import { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { CheckCircle2, Clock, AlertCircle, Loader2, ExternalLink } from 'lucide-react';
+import { DeploymentData } from '@/types/deployment';
 
 interface DeploymentStatusProps {
   deploymentId: string;
   onClose?: () => void;
 }
 
-type DeploymentStatus = 'pending' | 'building' | 'succeeded' | 'failed' | 'deploying';
-
-interface DeploymentData {
-  id: string;
-  status: DeploymentStatus;
-  appName?: string;
-  webUrl?: string;
-  error?: string;
-  updatedAt: string;
-  buildId?: string;
-}
+type DeploymentStatus = 'pending' | 'building' | 'success' | 'failed' | 'deploying';
 
 export function DeploymentStatus({ deploymentId, onClose }: DeploymentStatusProps) {
   const [deployment, setDeployment] = useState<DeploymentData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchDeploymentStatus = async () => {
+  const fetchDeploymentStatus = async (): Promise<DeploymentData | null> => {
     try {
       const response = await fetch(`/api/deploy/${deploymentId}`, {
         headers: {
@@ -39,29 +30,45 @@ export function DeploymentStatus({ deploymentId, onClose }: DeploymentStatusProp
       }
 
       const data = await response.json();
-      setDeployment(data);
-      setError(null);
-
-      // If deployment is still in progress, poll for updates
-      if (['pending', 'building', 'deploying'].includes(data.status)) {
-        // Use exponential backoff for polling
-        const delay = Math.min(1000 * Math.pow(1.5, 5), 10000); // Max 10s delay
-        setTimeout(fetchDeploymentStatus, delay);
-      }
+      return data as DeploymentData;
     } catch (err) {
       console.error('Error fetching deployment status:', err);
       setError(err instanceof Error ? err.message : 'An unknown error occurred');
+      return null;
     } finally {
       setIsLoading(false);
     }
   };
 
   useEffect(() => {
-    fetchDeploymentStatus();
+    let isMounted = true;
     
-    // Clean up any pending timeouts when component unmounts
+    const fetchData = async () => {
+      try {
+        const data = await fetchDeploymentStatus();
+        if (isMounted) {
+          if (data) {
+            setDeployment(data);
+          } else {
+            console.error('Invalid deployment data received');
+          }
+        }
+      } catch (error) {
+        if (isMounted) {
+          setError(error instanceof Error ? error.message : 'An error occurred');
+        }
+      }
+    };
+
+    fetchData();
+    
+    // Set up polling
+    const intervalId = setInterval(fetchData, 5000);
+    
+    // Clean up when component unmounts
     return () => {
-      // Clear any pending timeouts
+      isMounted = false;
+      clearInterval(intervalId);
       const highestTimeoutId = window.setTimeout(() => {}, 0);
       for (let i = 0; i < highestTimeoutId; i++) {
         window.clearTimeout(i);
@@ -79,7 +86,7 @@ export function DeploymentStatus({ deploymentId, onClose }: DeploymentStatusProp
     }
 
     switch (deployment.status) {
-      case 'succeeded':
+      case 'success':
         return <CheckCircle2 className="h-5 w-5 text-green-500" />;
       case 'failed':
         return <AlertCircle className="h-5 w-5 text-red-500" />;
@@ -104,7 +111,7 @@ export function DeploymentStatus({ deploymentId, onClose }: DeploymentStatusProp
         return 'Building your MCP server...';
       case 'deploying':
         return 'Deploying to Heroku...';
-      case 'succeeded':
+      case 'success':
         return 'Deployment successful!';
       case 'failed':
         return 'Deployment failed';
@@ -118,7 +125,7 @@ export function DeploymentStatus({ deploymentId, onClose }: DeploymentStatusProp
       return null;
     }
 
-    if (deployment.status === 'succeeded' && deployment.webUrl) {
+    if (deployment.status === 'success' && deployment.webUrl) {
       return (
         <a
           href={deployment.webUrl}

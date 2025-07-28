@@ -526,13 +526,14 @@ export async function deployToHeroku({
   webUrl?: string;
 }> {
   // 1. Generate a direct download URL using the Cloudflare Worker
-  const workerUrl = `https://contexto-r2-proxy.your-account.workers.dev/exports/${userId}/${pipelineId}/mcp-pipeline.zip`;
+  const workerBaseUrl = process.env.CLOUDFLARE_WORKER_URL || 'https://contexto-r2-proxy.your-account.workers.dev';
+  const workerUrl = `${workerBaseUrl}/exports/${userId}/${pipelineId}/mcp-pipeline.zip`;
   console.log('[deployToHeroku] Using Cloudflare Worker URL:', workerUrl);
   
   try {
     // Basic URL validation
     if (!workerUrl.startsWith('https://')) {
-      throw new Error(`Invalid worker URL: ${workerUrl}`);
+      throw new Error(`Invalid worker URL: ${workerUrl}. Set CLOUDFLARE_WORKER_URL environment variable.`);
     }
     
     // Store the URL in a variable with a clear name
