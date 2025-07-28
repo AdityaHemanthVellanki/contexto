@@ -45,10 +45,33 @@ setInterval(() => {
  * Warning: This is suitable for low-traffic applications or development.
  * For high-traffic production environments, consider a distributed solution.
  */
-export const rateLimit = {
-  limit: async (email: string) => ({ 
-    limited: false,
-    response: undefined,
-    headers: {}
-  }),
-};
+export async function rateLimit(identifier: string, options: { limit: number; windowSizeInSeconds: number }): Promise<RateLimitResult> {
+  const { limit, windowSizeInSeconds } = options;
+  const now = Date.now();
+  const windowStart = now - (windowSizeInSeconds * 1000);
+  
+  // Get existing data for this identifier
+  const data = rateLimitStore.get(identifier) || { count: 0, resetTime: now + (windowSizeInSeconds * 1000) };
+  
+  // Reset if window has expired
+  if (now > data.resetTime) {
+    data.count = 0;
+    data.resetTime = now + (windowSizeInSeconds * 1000);
+  }
+  
+  // Increment count
+  data.count++;
+  rateLimitStore.set(identifier, data);
+  
+  const limited = data.count > limit;
+  
+  return {
+    limited,
+    response: limited ? NextResponse.json({ error: 'Too many requests' }, { status: 429 }) : undefined,
+    headers: {
+      'X-RateLimit-Limit': String(limit),
+      'X-RateLimit-Remaining': String(Math.max(0, limit - data.count)),
+      'X-RateLimit-Reset': String(Math.floor(data.resetTime / 1000)),
+    },
+  };
+}

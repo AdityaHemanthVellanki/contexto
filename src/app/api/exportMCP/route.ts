@@ -23,7 +23,10 @@ export async function POST(request: NextRequest) {
   try {
     // Apply rate limiting - 5 requests per 30 seconds per user/IP
     const identifier = request.headers.get('x-user-id') || 'anonymous';
-    const rateLimitResult = await rateLimit.limit(identifier);
+    const rateLimitResult = await rateLimit(identifier, {
+      limit: 5,
+      windowSizeInSeconds: 30
+    });
     
     if (rateLimitResult.limited) {
       return rateLimitResult.response || NextResponse.json(
@@ -34,14 +37,14 @@ export async function POST(request: NextRequest) {
     
     // Authenticate the request
     const authResult = await authenticateRequest(request);
-    if (!authResult.success || !authResult.user) {
-      return NextResponse.json(
+    if (!authResult.authenticated || !authResult.userId) {
+      return authResult.response || NextResponse.json(
         { message: 'Authentication required', error: 'unauthorized' },
         { status: 401 }
       );
     }
 
-    const userId = authResult.user.uid;
+    const userId = authResult.userId;
     const body = await request.json();
     const { pipelineId, fileId } = body;
 

@@ -19,7 +19,8 @@ try {
 export async function GET(request: NextRequest) {
   try {
     // Apply rate limiting - 10 requests per 5 seconds per user/IP
-    const rateLimitResult = await rateLimit(request, {
+    const identifier = request.headers.get('x-user-id') || request.headers.get('x-forwarded-for') || 'anonymous';
+    const rateLimitResult = await rateLimit(identifier, {
       limit: 10,
       windowSizeInSeconds: 5
     });

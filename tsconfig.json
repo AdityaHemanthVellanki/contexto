@@ -21,8 +21,7 @@
     "types": [
       "cypress",
       "node",
-      "mocha",
-      "@cloudflare/workers-types"
+      "mocha"
     ],
     "plugins": [
       {
