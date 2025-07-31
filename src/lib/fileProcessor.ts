@@ -107,28 +107,17 @@ async function processPDF(buffer: Buffer): Promise<string> {
       await fs.mkdir(tempDir, { recursive: true });
       console.log(`Created temporary directory for PDF processing: ${tempDir}`);
       
-      // We'll create our own test file and modify the process working directory temporarily
+      // Process PDF directly without changing working directory
       const originalCwd = process.cwd();
-      const testDirPath = path.join(tempDir, 'test', 'data');
-      await fs.mkdir(testDirPath, { recursive: true });
-      
-      // Create the exact file that pdf-parse is looking for
-      const minimalPdfPath = path.join(testDirPath, '05-versions-space.pdf');
-      await fs.writeFile(minimalPdfPath, buffer);
-      
-      // Temporarily change working directory to use our test directory
-      process.chdir(tempDir);
       
       // Process using direct approach
       try {
         const pdfParse = await import('pdf-parse');
         
-        // First attempt - with direct options
+        // Process PDF with basic options
         const options = {
           max: 0, // No page limit
-          version: 'default',
-          // Use the file we just created
-          file: minimalPdfPath
+          version: 'default'
         };
         
         console.log('Parsing PDF with direct file reference');

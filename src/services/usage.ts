@@ -1,8 +1,8 @@
 import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
-import { db } from '@/lib/firebase';
-
-// Import Firebase Admin SDK for server-side usage
+import firebaseInstance from '@/lib/firebase';
 import { getFirebaseAdmin } from '@/lib/firebase-admin';
+
+const db = firebaseInstance.db;
 
 /**
  * Token usage metrics interface
@@ -55,17 +55,20 @@ export async function logUsage(
       // Server-side Firebase Admin SDK - using real implementation
       try {
         // Get properly initialized Firebase Admin instance
-        const admin = getFirebaseAdmin();
-        const adminDb = admin.firestore();
+        const adminApp = await getFirebaseAdmin();
+        
+        // Import Firestore from Firebase Admin SDK
+        const { getFirestore, FieldValue } = await import('firebase-admin/firestore');
+        const db = getFirestore(adminApp);
         
         // Use server timestamp from admin SDK
-        await adminDb.collection('usage_metrics').add({
+        await db.collection('usage_metrics').add({
           userId,
           callType,
           promptTokens: usage.promptTokens,
           completionTokens: usage.completionTokens,
           totalTokens: usage.promptTokens + usage.completionTokens,
-          timestamp: admin.firestore.FieldValue.serverTimestamp(),
+          timestamp: FieldValue.serverTimestamp(),
           environment: 'server',
           createdAt: new Date().toISOString() // Fallback timestamp
         });
