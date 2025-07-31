@@ -6,6 +6,33 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // === USER-SCOPED COLLECTIONS ===
+    // User files: users/{userId}/files/{fileId}
+    match /users/{userId}/files/{fileId} {
+      allow create, read, update, delete: if request.auth != null && request.auth.uid == userId;
+    }
+    
+    // User chats: users/{userId}/chats/{chatId}
+    match /users/{userId}/chats/{chatId} {
+      allow create, read, update, delete: if request.auth != null && request.auth.uid == userId;
+    }
+    
+    // Chat messages: users/{userId}/chats/{chatId}/messages/{messageId}
+    match /users/{userId}/chats/{chatId}/messages/{messageId} {
+      allow create, read, update, delete: if request.auth != null && request.auth.uid == userId;
+    }
+    
+    // User pipelines: users/{userId}/pipelines/{pipelineId}
+    match /users/{userId}/pipelines/{pipelineId} {
+      allow create, read, update, delete: if request.auth != null && request.auth.uid == userId;
+    }
+    
+    // User profiles: users/{userId}
+    match /users/{userId} {
+      allow create, read, update: if request.auth != null && request.auth.uid == userId;
+      allow delete: if false; // Prevent accidental profile deletion
+    }
+
     // === CHAT CONVERSATIONS ===
     // Hierarchical structure: conversations/{userId}/{chatId}/messages/{msgId}
     match /conversations/{userId}/{chatId}/messages/{msgId} {

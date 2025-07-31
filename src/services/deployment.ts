@@ -1,8 +1,11 @@
 import { v4 as uuidv4 } from 'uuid';
-import { db } from '@/lib/firebase';
 import { doc, setDoc, updateDoc, getDoc } from 'firebase/firestore';
+import firebaseInstance from '@/lib/firebase';
 import { deployToHeroku, generateHerokuAppName } from '@/lib/heroku';
 import config from '@/config';
+
+// Get Firebase services
+const db = firebaseInstance.db;
 
 interface DeploymentOptions {
   pipelineId: string;
@@ -65,28 +68,38 @@ export async function deployMcpServer({
     };
     
     // Deploy to Heroku
-    const { app, build, webUrl } = await deployToHeroku(
+    const deploymentResult = await deployToHeroku({
       appName,
-      exportUrl,
-      combinedEnvVars
-    );
-    
+      pipelineId,
+      userId,
+      envVars: combinedEnvVars
+    });
+
+    if (!deploymentResult.success) {
+      throw new Error(deploymentResult.error || 'Deployment failed');
+    }
+
+    // Ensure we have valid deployment data
+    if (!deploymentResult.app || !deploymentResult.build || !deploymentResult.webUrl) {
+      throw new Error('Invalid deployment response: missing required fields');
+    }
+
     // Update deployment record with success
     await updateDoc(deploymentRef, {
       status: 'succeeded',
-      appId: app.id,
-      appName: app.name,
-      webUrl,
-      buildId: build.id,
+      appId: deploymentResult.app.id,
+      appName: deploymentResult.app.name,
+      webUrl: deploymentResult.webUrl,
+      buildId: deploymentResult.build.id,
       updatedAt: new Date().toISOString(),
     });
     
     return {
       success: true,
-      appId: app.id,
-      appName: app.name,
-      webUrl,
-      buildId: build.id,
+      appId: deploymentResult.app.id,
+      appName: deploymentResult.app.name,
+      webUrl: deploymentResult.webUrl,
+      buildId: deploymentResult.build.id,
     };
   } catch (error: any) {
     console.error('Deployment failed:', error);

@@ -10,21 +10,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
-// Initialize Firebase Admin SDK immediately to avoid async issues
-// This ensures we have a synchronous instance available for compatibility
-let adminApp: App;
-try {
-  if (getApps().length === 0) {
-    adminApp = initializeApp(undefined, 'default');
-    console.log('Firebase Admin SDK initialized with default credentials');
-  } else {
-    adminApp = getApps()[0];
-    console.log('Using existing Firebase Admin SDK instance');
-  }
-} catch (error) {
-  console.warn('Could not initialize Firebase Admin SDK with default credentials');
-  // We'll initialize with proper credentials later
-}
+// Track initialization status
+let adminApp: App | null = null;
 
 // Track initialization status
 let firebaseInitialized = false;
