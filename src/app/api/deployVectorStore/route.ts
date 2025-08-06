@@ -13,7 +13,6 @@ try {
     error instanceof Error ? error.message : String(error));
   // The error will be handled when the API route is called - no fallbacks
 }
-
 import { authenticateRequest } from '@/lib/api-auth';
 import { rateLimit } from '@/lib/rate-limiter-memory';
 
@@ -25,17 +24,6 @@ const DeployVectorStoreSchema = z.object({
 
 // Vector store factory function
 function getVectorStore(sizeBytes: number, purpose: string): { type: string; priority: number } {
-  // Validate Pinecone environment variables up front
-  const API_KEY = process.env.PINECONE_API_KEY;
-  const ENVIRONMENT = process.env.PINECONE_ENVIRONMENT;
-  const INDEX_NAME = process.env.PINECONE_INDEX_NAME;
-
-  if (!API_KEY || !ENVIRONMENT || !INDEX_NAME) {
-    throw new Error(
-      'Missing Pinecone config: please set PINECONE_API_KEY, PINECONE_ENVIRONMENT, and PINECONE_INDEX_NAME'
-    );
-  }
-
   // Intelligent vector store selection based on file size and purpose
   if (sizeBytes > 50 * 1024 * 1024) { // > 50MB
     return { type: 'pinecone', priority: 1 }; // Best for large datasets
@@ -48,27 +36,57 @@ function getVectorStore(sizeBytes: number, purpose: string): { type: string; pri
   }
 }
 
-// Pinecone index creation with proper client initialization
+// Pinecone index creation
 async function createPineconeIndex(pipelineId: string): Promise<string> {
-  const API_KEY = process.env.PINECONE_API_KEY;
-  const ENVIRONMENT = process.env.PINECONE_ENVIRONMENT || 'us-east1-gcp';
-  const INDEX_NAME = process.env.PINECONE_INDEX_NAME;
-
-  // Validate environment variables up front
-  if (!API_KEY || !ENVIRONMENT || !INDEX_NAME) {
-    throw new Error(
-      'Missing Pinecone config: please set PINECONE_API_KEY, PINECONE_ENVIRONMENT, and PINECONE_INDEX_NAME'
-    );
+  const apiKey = process.env.PINECONE_API_KEY;
+  const environment = process.env.PINECONE_ENVIRONMENT || 'us-east1-gcp';
+  
+  if (!apiKey) {
+    throw new Error('Pinecone API key not configured');
   }
 
-  const namespace = `pipeline-${pipelineId}`;
+  const indexName = `contexto-${pipelineId}`.toLowerCase().replace(/[^a-z0-9-]/g, '-');
   
   try {
-    // Use the configured index name from environment
-    const indexName = INDEX_NAME;
-    
-    // Return the Pinecone index URL for the configured index
-    return `https://${indexName}-${ENVIRONMENT}.svc.${ENVIRONMENT}.pinecone.io`;
+    // Check if index already exists
+    const listResponse = await fetch(`https://api.pinecone.io/indexes`, {
+      headers: {
+        'Api-Key': apiKey,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    if (listResponse.ok) {
+      const indexes = await listResponse.json();
+      const existingIndex = indexes.indexes?.find((idx: any) => idx.name === indexName);
+      if (existingIndex) {
+        return `https://${indexName}-${environment}.svc.${environment}.pinecone.io`;
+      }
+    }
+
+    // Create new index
+    const createResponse = await fetch(`https://api.pinecone.io/indexes`, {
+      method: 'POST',
+      headers: {
+        'Api-Key': apiKey,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        name: indexName,
+        dimension: 1536, // OpenAI embedding dimension
+        metric: 'cosine',
+        pods: 1,
+        replicas: 1,
+        pod_type: 'p1.x1'
+      })
+    });
+
+    if (!createResponse.ok) {
+      const error = await createResponse.text();
+      throw new Error(`Pinecone index creation failed: ${error}`);
+    }
+
+    return `https://${indexName}-${environment}.svc.${environment}.pinecone.io`;
   } catch (error) {
     console.error('Pinecone deployment error:', error);
     throw error;
@@ -77,51 +95,22 @@ async function createPineconeIndex(pipelineId: string): Promise<string> {
 
 // Qdrant collection creation
 async function createQdrantCollection(pipelineId: string): Promise<string> {
-  const apiKey = process.env.QDRANT_API_KEY;
-  const url = process.env.QDRANT_URL;
+  const { apiKey, url } = await getQdrantConfig();
   
-  if (!apiKey || !url) {
-    throw new Error('Qdrant credentials not configured');
-  }
+  const client = new QdrantClient({
+    url,
+    apiKey,
+  });
 
   const collectionName = `contexto-${pipelineId}`.toLowerCase().replace(/[^a-z0-9-]/g, '-');
   
   try {
-    // Check if collection already exists
-    const getResponse = await fetch(`${url}/collections/${collectionName}`, {
-      headers: {
-        'api-key': apiKey,
-        'Content-Type': 'application/json'
-      }
-    });
-
-    if (getResponse.ok) {
-      return `${url}/collections/${collectionName}`;
-    }
-
-    // Create new collection
-    const createResponse = await fetch(`${url}/collections/${collectionName}`, {
-      method: 'PUT',
-      headers: {
-        'api-key': apiKey,
-        'Content-Type': 'application/json'
+    await client.createCollection(collectionName, {
+      vectors: {
+        size: 1536, // OpenAI embedding dimension
+        distance: 'Cosine',
       },
-      body: JSON.stringify({
-        vectors: {
-          size: 1536, // OpenAI embedding dimension
-          distance: 'Cosine'
-        },
-        optimizers_config: {
-          default_segment_number: 2
-        },
-        replication_factor: 1
-      })
     });
-
-    if (!createResponse.ok) {
-      const error = await createResponse.text();
-      throw new Error(`Qdrant collection creation failed: ${error}`);
-    }
 
     return `${url}/collections/${collectionName}`;
   } catch (error) {
@@ -132,13 +121,10 @@ async function createQdrantCollection(pipelineId: string): Promise<string> {
 
 // Supabase table creation
 async function createSupabaseTable(pipelineId: string): Promise<string> {
-  const url = process.env.SUPABASE_URL;
-  const serviceKey = process.env.SUPABASE_SERVICE_KEY;
+  const { url, serviceKey } = await getSupabaseConfig();
   
-  if (!url || !serviceKey) {
-    throw new Error('Supabase credentials not configured');
-  }
-
+  const supabase = createClient(url, serviceKey);
+  
   const tableName = `contexto_${pipelineId}`.toLowerCase().replace(/[^a-z0-9_]/g, '_');
   
   try {
@@ -266,7 +252,7 @@ export async function POST(request: NextRequest) {
     console.log(`Selected vector store: ${vectorStoreConfig.type} for pipeline ${pipelineId}`);
 
     let vectorStoreEndpoint: string;
-    let storeType: string = vectorStoreConfig.type;
+    const storeType: string = vectorStoreConfig.type;
 
     // Provision vector store based on type
     try {

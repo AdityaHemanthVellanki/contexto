@@ -3,20 +3,31 @@ import { z } from 'zod';
 import { authenticateRequest } from '@/lib/api-auth';
 import { rateLimit } from '@/lib/rate-limiter-memory';
 import { r2, R2_BUCKET } from '@/lib/r2';
-import { PutObjectCommand } from '@aws-sdk/client-s3';
-import { execSync } from 'child_process';
-import { mkdir, mkdtemp, rm, writeFile, readFile } from 'fs/promises';
-import path from 'path';
+import { GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
+import { deployToHeroku } from '@/lib/heroku-deploy';
+import { exec } from 'child_process';
+import { promisify } from 'util';
 import os from 'os';
+import fs from 'fs/promises';
+import path from 'path';
 import { initializeFirebaseAdmin } from '@/lib/firebase-admin-init';
 
-// Initialize Firebase Admin
-const adminDb = initializeFirebaseAdmin();
+// Initialize Firebase Admin SDK at module load time
+// This ensures Firebase is ready before any requests are processed
+try {
+  // This will initialize Firebase Admin if not already initialized
+  initializeFirebaseAdmin();
+  console.log('✅ Firebase initialized successfully for deployServer API');
+} catch (error) {
+  console.error('❌ Firebase initialization failed in deployServer API:', 
+    error instanceof Error ? error.message : String(error));
+  // The error will be handled when the API route is called - no fallbacks
+}
 
-// Schema for deployment request
+// Request schema validation
 const DeployServerSchema = z.object({
-  pipelineId: z.string(),
-  fileId: z.string().optional(),
+  pipelineId: z.string().min(1),
+  fileId: z.string().min(1)
 });
 
 // Heroku deployment file structure
@@ -25,87 +36,330 @@ interface HerokuFile {
   data: string;
 }
 
+// Promisify exec for async usage
+const execAsync = promisify(exec);
 
-
-
-
-// Helper function to ensure Heroku app exists
-async function ensureHerokuApp(appName: string): Promise<{ id: string; name: string }> {
-  const herokuApiKey = process.env.HEROKU_API_KEY;
-  if (!herokuApiKey) {
-    throw new Error('HEROKU_API_KEY environment variable is not set');
-  }
-
+// Generate VS Code extension and upload to R2
+async function generateVSCodeExtension(pipelineId: string, mcpUrl: string): Promise<string> {
+  const tempDir = path.join(os.tmpdir(), `vscode-ext-${pipelineId}`);
+  const templateDir = path.join(process.cwd(), 'vscode-extension-template');
+  
   try {
-    // Try to get existing app
-    const response = await fetch(`https://api.heroku.com/apps/${appName}`, {
-      method: 'GET',
-      headers: {
-        'Authorization': `Bearer ${herokuApiKey}`,
-        'Accept': 'application/vnd.heroku+json; version=3',
-      },
-    });
-
-    if (response.ok) {
-      const app = await response.json();
-      return { id: app.id, name: app.name };
-    }
-
-    // Create new app if it doesn't exist
-    const createResponse = await fetch('https://api.heroku.com/apps', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${herokuApiKey}`,
-        'Accept': 'application/vnd.heroku+json; version=3',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        name: appName,
-        region: process.env.HEROKU_REGION || 'us',
-      }),
-    });
-
-    if (!createResponse.ok) {
-      const error = await createResponse.text();
-      throw new Error(`Failed to create Heroku app: ${error}`);
-    }
-
-    const app = await createResponse.json();
-    return { id: app.id, name: app.name };
-
+    // Copy template to temp directory
+    await execAsync(`cp -r "${templateDir}" "${tempDir}"`);
+    
+    // Update package.json with MCP endpoint
+    const packageJsonPath = path.join(tempDir, 'package.json');
+    const packageJson = JSON.parse(await fs.readFile(packageJsonPath, 'utf8'));
+    
+    // Set default endpoint in configuration
+    packageJson.contributes.configuration.properties['contexto.endpoint'].default = mcpUrl;
+    
+    // Write updated package.json
+    await fs.writeFile(packageJsonPath, JSON.stringify(packageJson, null, 2));
+    
+    // Update extension.ts to embed MCP URL as constant
+    const extensionPath = path.join(tempDir, 'src', 'extension.ts');
+    let extensionCode = await fs.readFile(extensionPath, 'utf8');
+    extensionCode = extensionCode.replace(
+      'PLACEHOLDER_MCP_URL',
+      mcpUrl
+    );
+    await fs.writeFile(extensionPath, extensionCode);
+    
+    // Install dependencies and compile
+    await execAsync('npm install', { cwd: tempDir });
+    await execAsync('npm run compile', { cwd: tempDir });
+    
+    // Package with vsce
+    const vsixPath = path.join(tempDir, `contexto-mcp-client-1.0.0.vsix`);
+    await execAsync(`vsce package --out "${vsixPath}"`, { cwd: tempDir });
+    
+    // Upload to R2
+    const vsixBuffer = await fs.readFile(vsixPath);
+    const r2Key = `vsixs/${pipelineId}.vsix`;
+    
+    await r2.send(new PutObjectCommand({
+      Bucket: R2_BUCKET,
+      Key: r2Key,
+      Body: vsixBuffer,
+      ContentType: 'application/octet-stream'
+    }));
+    
+    // Clean up temp directory
+    await execAsync(`rm -rf "${tempDir}"`);
+    
+    // Return R2 URL
+    return `https://${process.env.R2_PUBLIC_URL}/${r2Key}`;
+    
   } catch (error) {
-    console.error('Heroku app creation error:', error);
+    // Clean up on error
+    try {
+      await execAsync(`rm -rf "${tempDir}"`);
+    } catch (cleanupError) {
+      console.error('Cleanup error:', cleanupError);
+    }
     throw error;
   }
 }
 
-// Helper function to verify Heroku release
-async function verifyHerokuRelease(appId: string): Promise<boolean> {
-  const herokuApiKey = process.env.HEROKU_API_KEY;
-  if (!herokuApiKey) {
-    throw new Error('HEROKU_API_KEY environment variable is not set');
-  }
+// Generate OpenAPI specification for the MCP server
+function generateOpenAPISpec(pipelineId: string, purpose: string): string {
+  return JSON.stringify({
+    openapi: '3.0.0',
+    info: {
+      title: `MCP Server - ${pipelineId}`,
+      description: `Model Context Protocol server for: ${purpose}`,
+      version: '1.0.0'
+    },
+    servers: [
+      {
+        url: 'https://your-app-name.herokuapp.com',
+        description: 'Heroku production server'
+      }
+    ],
+    paths: {
+      '/mcp': {
+        post: {
+          summary: 'MCP Protocol Endpoint',
+          description: 'Main endpoint for Model Context Protocol communication',
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    method: { type: 'string' },
+                    params: { type: 'object' }
+                  }
+                }
+              }
+            }
+          },
+          responses: {
+            '200': {
+              description: 'Successful response',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      result: { type: 'object' }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      '/health': {
+        get: {
+          summary: 'Health check',
+          responses: {
+            '200': {
+              description: 'Server is healthy'
+            }
+          }
+        }
+      }
+    }
+  }, null, 2);
+}
 
+// Generate MCP server function for Heroku deployment
+function generateMCPServerFunction(pipelineId: string, vectorStoreEndpoint: string, storeType: string): string {
+  return `import { NextRequest, NextResponse } from 'next/server';
+import { initVectorStoreClient } from '../vectorStoreClient';
+
+// MCP Server for Pipeline: ${pipelineId}
+// Generated by Contexto
+
+const PIPELINE_ID = '${pipelineId}';
+
+// Initialize vector store from environment variables
+const store = initVectorStoreClient({
+  type: process.env.VECTOR_STORE_TYPE,
+  config: JSON.parse(process.env.VECTOR_STORE_CONFIG || '{}')
+});
+
+// Log successful initialization
+console.log(\`Vector store initialized: \${process.env.VECTOR_STORE_TYPE}\`);
+
+export async function POST(request: NextRequest) {
   try {
-    const response = await fetch(`https://api.heroku.com/apps/${appId}/releases`, {
+    const body = await request.json();
+    const { method, params } = body;
+
+    switch (method) {
+      case 'tools/list':
+        return NextResponse.json({
+          tools: [
+            {
+              name: 'process_data',
+              description: 'Process data through the MCP pipeline',
+              inputSchema: {
+                type: 'object',
+                properties: {
+                  input: {
+                    type: 'string',
+                    description: 'Input data to process'
+                  },
+                  options: {
+                    type: 'object',
+                    properties: {
+                      topK: { type: 'number', default: 5 },
+                      threshold: { type: 'number', default: 0.7 }
+                    }
+                  }
+                },
+                required: ['input']
+              }
+            },
+            {
+              name: 'get_pipeline_info',
+              description: 'Get information about this MCP pipeline',
+              inputSchema: {
+                type: 'object',
+                properties: {}
+              }
+            }
+          ]
+        });
+
+      case 'tools/call':
+        const { name, arguments: args } = params;
+        
+        if (name === 'process_data') {
+          const { input, options = {} } = args;
+          const { topK = 5 } = options;
+          
+          try {
+            // Generate embeddings for the input
+            // In a production environment, this would use a proper embeddings model
+            const embedding = await generateEmbedding(input);
+            
+            // Query the vector store
+            const results = await store.query(embedding, topK);
+            
+            // Process the results
+            const context = results.map((result, i) => 
+              \`[Context \${i+1}] \${result.metadata.text || 'No text available'}\`
+            ).join('\\n\\n');
+            
+            return NextResponse.json({
+              result: {
+                processed: true,
+                message: \`Processed input with \${results.length} context chunks\`,
+                pipelineId: PIPELINE_ID,
+                context: context,
+                topMatches: results.length
+              }
+            });
+          };
+
+          return NextResponse.json({
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify(result, null, 2)
+              }
+            ]
+          });
+        }
+
+        if (name === 'get_pipeline_info') {
+          return NextResponse.json({
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  pipelineId: PIPELINE_ID,
+                  vectorStore: {
+                    type: STORE_TYPE,
+                    endpoint: VECTOR_STORE_ENDPOINT
+                  },
+                  status: 'deployed',
+                  version: '1.0.0'
+                }, null, 2)
+              }
+            ]
+          });
+        }
+
+        return NextResponse.json({
+          error: { code: -32601, message: 'Method not found' }
+        }, { status: 404 });
+
+      default:
+        return NextResponse.json({
+          error: { code: -32601, message: 'Method not found' }
+        }, { status: 404 });
+    }
+  } catch (error) {
+    console.error('MCP Server error:', error);
+    return NextResponse.json({
+      error: { 
+        code: -32603, 
+        message: 'Internal error',
+        data: error instanceof Error ? error.message : 'Unknown error'
+      }
+    }, { status: 500 });
+  }
+}
+
+export async function GET() {
+  return NextResponse.json({
+    status: 'healthy',
+    pipelineId: PIPELINE_ID,
+    timestamp: new Date().toISOString()
+  });
+}
+`;
+}
+
+// This function is no longer used - we use verifyHerokuDeployment instead
+async function verifyRailwayDeployment(pipelineId: string): Promise<{ verified: boolean; status: string; message: string }> {
+  console.warn('verifyRailwayDeployment is deprecated, use verifyHerokuDeployment instead');
+  return {
+    verified: false,
+    status: 'error',
+    message: 'Railway deployments are no longer supported. Use Heroku deployments instead.'
+  };
+}
+
+// Verify Heroku deployment by checking the app URL
+async function verifyHerokuDeployment(appUrl: string): Promise<{ verified: boolean; status: string; message: string }> {
+  try {
+    // Try to fetch the app URL to verify it's responding
+    const response = await fetch(`${appUrl}/health`, {
       method: 'GET',
       headers: {
-        'Authorization': `Bearer ${herokuApiKey}`,
-        'Accept': 'application/vnd.heroku+json; version=3',
-      },
+        'Accept': 'application/json'
+      }
     });
-
-    if (!response.ok) {
-      return false;
+    
+    if (response.ok) {
+      return {
+        verified: true,
+        status: 'success',
+        message: `Heroku deployment at ${appUrl} verified successfully`
+      };
+    } else {
+      return {
+        verified: false,
+        status: 'warning',
+        message: `Heroku app is deployed but health check returned ${response.status}`
+      };
     }
-
-    const releases = await response.json();
-    const latestRelease = releases[0];
-    return latestRelease && latestRelease.status === 'succeeded';
-
   } catch (error) {
-    console.error('Heroku release verification error:', error);
-    return false;
+    console.error('Heroku verification error:', error);
+    return {
+      verified: false,
+      status: 'error',
+      message: `❌ Verification failed: ${error instanceof Error ? error.message : 'Unknown error'}`
+    };
   }
 }
 
@@ -151,195 +405,48 @@ export function getStoreSpecificConfig(storeType: string, pipelineId: string, us
   }
 }
 
-// Helper function to generate VS Code extension
-async function generateVSCodeExtension(pipelineId: string, mcpUrl: string): Promise<string> {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), `vscode-extension-${pipelineId}-`));
-  
-  try {
-    // Create extension directory structure
-    await mkdir(path.join(tempDir, 'src'), { recursive: true });
-
-    // Create package.json
-    const packageJson = {
-      name: `contexto-mcp-${pipelineId}`,
-      displayName: 'Contexto MCP Client',
-      description: 'VS Code extension for Contexto MCP server',
-      version: '1.0.0',
-      publisher: 'contexto',
-      engines: { vscode: '^1.74.0' },
-      categories: ['Other'],
-      activationEvents: ['onStartupFinished'],
-      main: './out/extension.js',
-      contributes: {
-        commands: [{
-          command: 'contexto.askMCP',
-          title: 'Ask MCP'
-        }],
-        configuration: {
-          title: 'Contexto MCP',
-          properties: {
-            'contexto.mcpEndpoint': {
-              type: 'string',
-              default: mcpUrl,
-              description: 'MCP server endpoint'
-            }
-          }
-        }
-      },
-      scripts: {
-        vscode: 'prebuild',
-        prebuild: 'npm run clean && npm run compile',
-        compile: 'tsc -p ./',
-        clean: 'rimraf out'
-      },
-      devDependencies: {
-        '@types/vscode': '^1.74.0',
-        '@types/node': '16.x',
-        typescript: '^4.9.4',
-        rimraf: '^3.0.2'
-      }
-    };
-
-    await writeFile(
-      path.join(tempDir, 'package.json'),
-      JSON.stringify(packageJson, null, 2)
-    );
-
-    // Create extension.ts
-    const extensionTs = `import * as vscode from 'vscode';
-
-export function activate(context: vscode.ExtensionContext) {
-  const askMCPCommand = vscode.commands.registerCommand('contexto.askMCP', async () => {
-    const config = vscode.workspace.getConfiguration('contexto');
-    const endpoint = config.get('mcpEndpoint', '${mcpUrl}');
-    
-    const question = await vscode.window.showInputBox({
-      prompt: 'Enter your question for the MCP server'
-    });
-    
-    if (!question) {
-      return;
-    }
-    
-    try {
-      const response = await fetch(\`\${endpoint}/query\`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ query: question })
-      });
-      
-      const data = await response.json();
-      
-      if (data.answer) {
-        const doc = await vscode.workspace.openTextDocument({
-          content: data.answer,
-          language: 'markdown'
-        });
-        vscode.window.showTextDocument(doc);
-      } else {
-        vscode.window.showErrorMessage('No response received from MCP server');
-      }
-    } catch (error) {
-      vscode.window.showErrorMessage('Error: ' + error);
-    }
-  });
-  
-  context.subscriptions.push(askMCPCommand);
-}
-
-export function deactivate() {}`;
-
-    await writeFile(
-      path.join(tempDir, 'src', 'extension.ts'),
-      extensionTs
-    );
-
-    // Create tsconfig.json
-    const tsconfig = {
-      compilerOptions: {
-        module: 'commonjs',
-        target: 'es2020',
-        outDir: 'out',
-        lib: ['es2020'],
-        sourceMap: true,
-        rootDir: 'src',
-        strict: true
-      },
-      exclude: ['node_modules', '.vscode-test']
-    };
-
-    await writeFile(
-      path.join(tempDir, 'tsconfig.json'),
-      JSON.stringify(tsconfig, null, 2)
-    );
-
-    // Install dependencies and build
-    execSync('npm install', { cwd: tempDir });
-    execSync('npm run compile', { cwd: tempDir });
-
-    // Package extension
-    execSync('npm install -g vsce', { cwd: tempDir });
-    execSync(`vsce package --out ${pipelineId}.vsix`, { cwd: tempDir });
-
-    // Upload to R2
-    const vsixPath = path.join(tempDir, `${pipelineId}.vsix`);
-    const vsixBuffer = await readFile(vsixPath);
-    
-    const key = `vsixs/${pipelineId}.vsix`;
-    await r2.send(new PutObjectCommand({
-      Bucket: R2_BUCKET,
-      Key: key,
-      Body: vsixBuffer,
-      ContentType: 'application/octet-stream'
-    }));
-
-    const vsixUrl = `${process.env.R2_PUBLIC_URL}/${key}`;
-    return vsixUrl;
-
-  } finally {
-    // Clean up temp directory
-    await rm(tempDir, { recursive: true, force: true });
-  }
+// Generate embedding function
+export function generateEmbedding(text: string): Promise<number[]> {
+  // Implementation would go here
+  // This is a placeholder that would be replaced with actual embedding generation
+  return Promise.resolve([]);
 }
 
 export async function POST(request: NextRequest) {
   try {
     // Apply rate limiting
-    const rateLimitResult = await rateLimit(request);
+    const rateLimitResult = await rateLimit(request, {
+      limit: 3,
+      windowSizeInSeconds: 600 // 3 requests per 10 minutes
+    });
+
     if (rateLimitResult.limited) {
       return NextResponse.json(
-        { error: 'Rate limit exceeded. Please wait before deploying more servers.' },
-        { status: 429 }
+        { error: 'Too many deployment requests. Please wait before trying again.' },
+        { status: 429, headers: rateLimitResult.headers }
       );
     }
 
     // Authenticate request
     const authResult = await authenticateRequest(request);
     if (!authResult.authenticated) {
-      return NextResponse.json(
-        { error: 'Unauthorized' },
-        { status: 401 }
-      );
+      return authResult.response || NextResponse.json({ error: 'Authentication failed' }, { status: 401 });
     }
 
-    const userId = authResult.userId;
+    const userId = authResult.userId!;
 
-    // Parse request body
+    // Parse and validate request body
     const body = await request.json();
-    const validation = DeployServerSchema.safeParse(body);
-
-    if (!validation.success) {
-      return NextResponse.json(
-        { error: 'Invalid request body', details: validation.error.errors },
-        { status: 400 }
-      );
+    const validationResult = DeployServerSchema.safeParse(body);
+    
+    if (!validationResult.success) {
+      return NextResponse.json({
+        error: 'Invalid request data',
+        details: validationResult.error.issues
+      }, { status: 400 });
     }
 
-    const { pipelineId, fileId } = validation.data;
-
-    console.log(`Starting MCP server deployment for pipeline ${pipelineId} by user ${userId}`);
+    const { pipelineId, fileId } = validationResult.data;
 
     // Load pipeline metadata
     const firestore = initializeFirebaseAdmin();
@@ -353,20 +460,37 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized access to pipeline' }, { status: 403 });
     }
 
-    // Get vector store configuration from pipeline
-    const vectorStoreEndpoint = pipelineData.vectorStore?.endpoint || '';
-    const storeType = pipelineData.vectorStore?.type || 'firestore';
-
-    if (!vectorStoreEndpoint) {
+    // Check if vector store is deployed
+    // Using the firestore instance we already initialized above
+    const vectorStoreDoc = await firestore.collection('deployments').doc(`${userId}_${pipelineId}_vectorstore`).get();
+    if (!vectorStoreDoc.exists) {
       return NextResponse.json({ 
-        error: 'Vector store endpoint not configured' 
+        error: 'Vector store must be deployed first. Please deploy the vector store before deploying the server.' 
       }, { status: 400 });
     }
 
+    const vectorStoreData = vectorStoreDoc.data()!;
+    const vectorStoreEndpoint = vectorStoreData.endpoint;
+    const storeType = vectorStoreData.storeType;
+
+    // Check if server is already deployed
+    // Using the firestore instance we already initialized above
+    const existingDeployment = await firestore.collection('deployments').doc(`${userId}_${pipelineId}_server`).get();
+    if (existingDeployment.exists) {
+      const deploymentData = existingDeployment.data()!;
+      if (deploymentData.status === 'deployed') {
+        return NextResponse.json({
+          mcpUrl: deploymentData.url,
+          deploymentId: deploymentData.deploymentId,
+          message: 'Server already deployed'
+        });
+      }
+    }
+    
     // Read the vectorStoreClient.js template
     let vectorStoreClientTemplate;
     try {
-      vectorStoreClientTemplate = await readFile(
+      vectorStoreClientTemplate = await fs.readFile(
         path.join(process.cwd(), 'src/templates/vectorStoreClient.js'), 
         'utf-8'
       );
@@ -376,13 +500,88 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Failed to prepare deployment files' }, { status: 500 });
     }
 
-    // Export the pipeline first
-    const exportResponse = await fetch(`${process.env.NEXT_PUBLIC_APP_URL}/api/exportMCP`, {
+    // Create a JSON config object for the vector store
+    const vectorStoreConfig = {
+      endpoint: vectorStoreEndpoint,
+      apiKey: getVectorStoreApiKey(storeType),
+      ...getStoreSpecificConfig(storeType, pipelineId, userId)
+    };
+
+    console.log(`Vector store config prepared for ${storeType}`);
+
+    // Prepare deployment files
+    const files: HerokuFile[] = [
+      {
+        file: 'api/mcp.ts',
+        data: generateMCPServerFunction(pipelineId, vectorStoreEndpoint, storeType)
+      },
+      {
+        file: 'vectorStoreClient.js',
+        data: vectorStoreClientTemplate
+      },
+      {
+        file: 'package.json',
+        data: JSON.stringify({
+          name: `mcp-server-${pipelineId}`,
+          version: '1.0.0',
+          description: `MCP Server for pipeline ${pipelineId}`,
+          main: 'api/mcp.ts',
+          scripts: {
+            build: 'tsc',
+            start: 'node dist/api/mcp.js'
+          },
+          dependencies: {
+            'next': '^14.0.0',
+            '@types/node': '^20.0.0',
+            'typescript': '^5.0.0'
+          },
+          engines: {
+            node: '>=18.0.0'
+          }
+        }, null, 2)
+      },
+      {
+        file: 'Procfile',
+        data: 'web: npm start'
+      },
+      {
+        file: 'openapi.yaml',
+        data: generateOpenAPISpec(pipelineId, pipelineData.metadata?.purpose || 'MCP Pipeline')
+      },
+      {
+        file: 'README.md',
+        data: `# MCP Server - ${pipelineId}
+
+This is an auto-deployed MCP (Model Context Protocol) server generated by Contexto.
+
+## Endpoints
+
+- \`POST /mcp\` - Main MCP protocol endpoint
+- \`GET /health\` - Health check endpoint
+
+## Usage
+
+This server implements the MCP specification and can be used with any MCP-compatible client.
+
+Vector Store: ${storeType}
+Endpoint: ${vectorStoreEndpoint}
+
+Generated on: ${new Date().toISOString()}
+`
+      }
+    ];
+
+    console.log(`Deploying MCP server for pipeline ${pipelineId} to Heroku...`);
+
+    // First, get the pipeline export URL from R2
+    // We need to call the export pipeline API to get the ZIP download URL
+    const exportResponse = await fetch(`${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/api/exportMCP`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'Authorization': request.headers.get('Authorization') || ''
       },
-      body: JSON.stringify({ pipelineId })
+      body: JSON.stringify({ pipelineId, fileId })
     });
 
     if (!exportResponse.ok) {
@@ -393,85 +592,88 @@ export async function POST(request: NextRequest) {
     const exportData = await exportResponse.json();
     const downloadUrl = exportData.downloadUrl;
 
-    // Create temp directory for Git-based deployment
-    const tempDir = await mkdtemp(path.join(os.tmpdir(), `pipeline-${pipelineId}-`));
-    
-    try {
-      console.log('Downloading and extracting pipeline...');
-      
-      // Download ZIP file
-      const zipResponse = await fetch(downloadUrl);
-      if (!zipResponse.ok) {
-        throw new Error(`Failed to download pipeline: ${zipResponse.statusText}`);
-      }
-      
-      const zipBuffer = await zipResponse.arrayBuffer();
-      await writeFile(path.join(tempDir, 'pipeline.zip'), Buffer.from(zipBuffer));
-
-      // Extract ZIP using unzip command
-      execSync(`unzip -o ${path.join(tempDir, 'pipeline.zip')} -d ${tempDir}`, { 
-        stdio: 'inherit' 
-      });
-      
-      // Remove ZIP file
-      await rm(path.join(tempDir, 'pipeline.zip'), { force: true });
-
-      // Initialize Git repository
-      console.log('Initializing Git repository...');
-      execSync('git init', { cwd: tempDir });
-      execSync('git config user.email "deploy@contexto.app"', { cwd: tempDir });
-      execSync('git config user.name "Contexto Deploy"', { cwd: tempDir });
-      execSync('git add .', { cwd: tempDir });
-      execSync(`git commit -m "Deploy pipeline: ${pipelineId}"`, { cwd: tempDir });
-
-      // Ensure Heroku app exists
-      const appName = `contexto-mcp-${pipelineId}`.toLowerCase();
-      console.log('Ensuring Heroku app exists...');
-      const app = await ensureHerokuApp(appName);
-
-      // Push to Heroku
-      console.log('Pushing to Heroku...');
-      execSync(`git remote add heroku https://git.heroku.com/${app.name}.git`, { cwd: tempDir });
-      execSync('git push -f heroku HEAD:main', { cwd: tempDir, stdio: 'inherit' });
-
-      // Verify release
-      console.log('Verifying Heroku release...');
-      const releaseVerified = await verifyHerokuRelease(app.id);
-      if (!releaseVerified) {
-        throw new Error('Heroku release verification failed');
-      }
-
-      const mcpUrl = `https://${app.name}.herokuapp.com`;
-
-      // Generate VS Code extension
-      console.log('Generating VS Code extension...');
-      const vsixUrl = await generateVSCodeExtension(pipelineId, mcpUrl);
-
-      // Log deployment to Firestore
-      await adminDb.collection('deployments').add({
-        pipelineId,
-        userId,
-        appId: app.id,
-        appName: app.name,
-        mcpUrl,
-        vsixUrl,
-        status: 'deployed',
-        createdAt: new Date(),
-        updatedAt: new Date()
-      });
-
-      return NextResponse.json({
-        success: true,
-        appUrl: mcpUrl,
-        appId: app.id,
-        vsixUrl,
-        verification: { verified: true, message: 'Heroku deployment successful' }
-      });
-
-    } finally {
-      // Clean up temp directory
-      await rm(tempDir, { recursive: true, force: true });
+    if (!downloadUrl) {
+      throw new Error('No download URL received from pipeline export');
     }
+
+    console.log(`deployServer handler: resolved downloadUrl = ${downloadUrl}`);
+    console.log(`Using pipeline ZIP from: ${downloadUrl}`);
+
+    // Deploy to Heroku
+    console.log('Initiating Heroku deployment with validated configuration...');
+    let appUrl, appId;
+    try {
+      const deployResult = await deployToHeroku(pipelineId, downloadUrl, storeType, vectorStoreConfig);
+      appUrl = deployResult.appUrl;
+      appId = deployResult.appId;
+      console.log(`Heroku deployment successful: ${appUrl}`);
+    } catch (deployError) {
+      console.error('Heroku deployment failed with error:', deployError);
+      return NextResponse.json({
+        error: deployError instanceof Error ? deployError.message : 'Heroku deployment failed',
+        details: 'Please check your Heroku configuration and API key'
+      }, { status: 500 });
+    }
+
+    // Verify Heroku deployment
+    console.log('Verifying Heroku deployment...');
+    const verificationResult = await verifyHerokuDeployment(appUrl);
+    console.log(`Heroku verification result: ${verificationResult.message}`);
+
+    // Log verification result for debugging but don't fail the deployment
+    // This allows the deployment to proceed even if verification fails
+    if (!verificationResult.verified) {
+      console.warn(`Heroku deployment verification failed: ${verificationResult.message}`);
+      // Still continue with the deployment process
+    }
+    
+    // Generate VS Code extension
+    console.log('Generating VS Code extension...');
+    const vsixUrl = await generateVSCodeExtension(pipelineId, appUrl);
+
+    // Save deployment metadata
+    // Using the firestore instance we already initialized above
+    await firestore.collection('deployments').doc(`${userId}_${pipelineId}_server`).set({
+      userId,
+      pipelineId,
+      type: 'server',
+      url: appUrl,
+      serviceId: appId,
+      vectorStoreEndpoint,
+      storeType,
+      status: 'deployed',
+      createdAt: new Date(),
+      updatedAt: new Date()
+    });
+
+    // Log deployment
+    // Using the firestore instance we already initialized above
+    await firestore.collection('usage').add({
+      userId,
+      action: 'mcp_server_deployed',
+      pipelineId,
+      url: appUrl,
+      serviceId: appId,
+      timestamp: new Date()
+    });
+
+    return NextResponse.json({
+      mcpUrl: appUrl,
+      vsixUrl: vsixUrl,
+      appId: appId,
+      vectorStoreEndpoint,
+      storeType,
+      message: 'MCP server deployed successfully to Heroku',
+      verification: {
+        verified: verificationResult.verified,
+        status: verificationResult.status,
+        message: verificationResult.message
+      }
+    }, {
+      status: 200,
+      headers: rateLimitResult.headers
+    });
+
   } catch (error: unknown) {
     console.error('MCP server deployment error:', error);
     

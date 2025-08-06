@@ -32,6 +32,19 @@ export async function getUserFromToken(token: string) {
   }
 }
 
+<<<<<<< HEAD
+export const authOptions = {
+  providers: [],
+  callbacks: {
+    session: async ({ session, token }: { session: any; token: any }) => {
+      if (token) {
+        session.user = token.user;
+      }
+      return session;
+    },
+  },
+};
+=======
 /**
  * Ensures a request is authenticated by extracting and verifying the Firebase ID token
  * @param request The incoming request object
@@ -83,3 +96,4 @@ export async function verifyAuth(request: NextRequest): Promise<{ success: boole
     };
   }
 }
+>>>>>>> db67cbcf19fab530d2b300d56dd527b2d7d1df52

@@ -3,10 +3,23 @@
 import { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { BiSend } from 'react-icons/bi';
+import { Node, Edge } from 'reactflow';
+import { NodeData } from '@/store/useCanvasStore';
+
+// Use the Node and Edge types directly from reactflow with NodeData
+type PipelineNode = Node<NodeData>;
+type PipelineEdge = Edge;
+
+interface IPipelineData {
+  nodes: PipelineNode[];
+  edges: PipelineEdge[];
+  summary?: string;
+}
 import { FiCpu, FiLoader } from 'react-icons/fi';
 import { useChatStore, ChatMessage } from '@/store/useChatStore';
 import { useCanvasStore } from '@/store/useCanvasStore';
 import { modelMapping } from '@/lib/azureOpenAI';
+import { PipelineData } from '@/types/pipeline'; // Update type import
 // Import firebase services
 import { getAuth } from 'firebase/auth';
 import { getFirestore, collection, addDoc, serverTimestamp } from 'firebase/firestore';
@@ -130,7 +143,7 @@ export default function ChatPromptWindow() {
             throw new Error(`API returned ${response.status}: ${errorText}`);
           }
 
-          const pipelineData = await response.json();
+          const pipelineData: IPipelineData = await response.json();
           
           // Add assistant message with pipeline data
           addMessage('assistant', `I generated a pipeline based on your description. ${pipelineData.summary || 'You can see it in the canvas now.'}`);

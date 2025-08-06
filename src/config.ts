@@ -66,7 +66,7 @@ const parseEnv = (): EnvVars => {
   } catch (error) {
     if (error instanceof z.ZodError) {
       console.error('❌ Invalid environment variables:', error.errors);
-      process.exit(1);
+      (process as NodeJS.Process).exit(1);
     }
     throw error;
   }

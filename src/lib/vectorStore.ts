@@ -13,3 +13,8 @@ export { SupabaseVectorStore } from './supabaseVectorStore';
 
 // Re-export vector store interfaces
 export type { VectorStore, VectorDocument, VectorQueryResult } from './vectorStoreInterface';
+
+export async function getVectorStore() {
+  // Implement vector store initialization
+  return {} as any; // Placeholder
+}

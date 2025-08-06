@@ -41,7 +41,6 @@ R2_ACCOUNT_ID=your-r2-account-id
 R2_ACCESS_KEY_ID=your-r2-access-key
 R2_SECRET_ACCESS_KEY=your-r2-secret-key
 R2_BUCKET=your-r2-bucket-name
-CF_R2_ENDPOINT=https://<account>.r2.cloudflarestorage.com  # Your R2 endpoint URL
 R2_PUBLIC_URL=your-r2-public-domain  # e.g., files.yourdomain.com
 ```
 

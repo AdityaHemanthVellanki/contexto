@@ -1,5 +1,34 @@
-import admin from 'firebase-admin';
+import admin, { ServiceAccount } from 'firebase-admin';
 import * as fs from 'fs';
+import { getServerEnv } from '@/lib/env-utils';
+
+// Get environment variables with proper typing
+const env = getServerEnv();
+
+// Define a custom interface that extends NodeJS.Process
+interface CustomNodeProcess extends NodeJS.Process {
+  cwd(): string;
+}
+
+declare const process: CustomNodeProcess;
+
+// Helper to get the project root directory
+const getProjectRoot = (): string => {
+  try {
+    // In Node.js environment, we can use __dirname or process.cwd()
+    if (typeof __dirname !== 'undefined') {
+      return process.cwd();
+    }
+    // For other environments, try to get it from process.cwd()
+    if (typeof process !== 'undefined' && typeof process.cwd === 'function') {
+      return process.cwd();
+    }
+  } catch (error) {
+    console.warn('Could not determine project root:', error);
+  }
+  // Fallback to current directory
+  return '.';
+};
 
 /**
  * Singleton Firebase Admin SDK initialization
@@ -12,32 +41,33 @@ if (!admin.apps.length) {
   console.log('Initializing Firebase Admin SDK...');
   
   // Check if we have environment variables for service account
-  let credential;
+  let credential: admin.credential.Credential | undefined;
   
-  if (process.env.FIREBASE_SERVICE_ACCOUNT_KEY) {
+  if (env.FIREBASE_SERVICE_ACCOUNT_KEY) {
     // Parse service account from environment variable
     try {
-      const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY);
+      const serviceAccount = JSON.parse(env.FIREBASE_SERVICE_ACCOUNT_KEY) as ServiceAccount;
       credential = admin.credential.cert(serviceAccount);
     } catch (error) {
       console.error('Error parsing Firebase service account:', error);
       throw new Error('Invalid Firebase service account configuration');
     }
   } else if (
-    process.env.FIREBASE_PROJECT_ID &&
-    process.env.FIREBASE_CLIENT_EMAIL &&
-    process.env.FIREBASE_PRIVATE_KEY
+    env.FIREBASE_PROJECT_ID &&
+    env.FIREBASE_CLIENT_EMAIL &&
+    env.FIREBASE_PRIVATE_KEY
   ) {
     // Use individual credential environment variables
     credential = admin.credential.cert({
-      projectId: process.env.FIREBASE_PROJECT_ID,
-      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-      privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
-    });
+      projectId: env.FIREBASE_PROJECT_ID,
+      clientEmail: env.FIREBASE_CLIENT_EMAIL,
+      privateKey: env.FIREBASE_PRIVATE_KEY.replace(/\\\\n/g, '\\n'),
+    } as ServiceAccount);
   } else {
     try {
       // For development, use the local service account file
-      const localServiceAccountPath = process.cwd() + '/service-account.json';
+      const projectRoot = getProjectRoot();
+      const localServiceAccountPath = `${projectRoot}/service-account.json`;
       console.log('Using local service account from:', localServiceAccountPath);
       
       // Check if file exists and is readable
@@ -45,51 +75,54 @@ if (!admin.apps.length) {
         try {
           // Use raw file reading instead of require to avoid caching issues
           const serviceAccountContent = fs.readFileSync(localServiceAccountPath, 'utf8');
-          const serviceAccount = JSON.parse(serviceAccountContent);
+          const serviceAccount = JSON.parse(serviceAccountContent) as ServiceAccount;
           credential = admin.credential.cert(serviceAccount);
-        } catch (err) {
-          console.error('Error reading local service account file:', err);
-          throw new Error('Invalid service account file content');
+        } catch (error) {
+          console.error('Error reading service account file:', error);
+          throw new Error('Failed to read service account file');
         }
       } else {
-        console.warn('Local service account file not found at:', localServiceAccountPath);
-        console.warn('Creating mock credential for local development');
-        
-        // Create a minimal mock credential for local development
-        credential = admin.credential.cert({
-          projectId: 'contexto-local-dev',
-          clientEmail: 'firebase-adminsdk-local@contexto-local-dev.iam.gserviceaccount.com',
-          privateKey: '-----BEGIN PRIVATE KEY-----\nMIIEugIBADANBgkqhkiG9w0BAQEFAASCBKQwggSgAgEAAoIBAQCsXXjI5xQqp9wR\n-----END PRIVATE KEY-----\n'
-        });
+        console.error('No Firebase service account found. Please set FIREBASE_SERVICE_ACCOUNT_KEY or provide individual credentials.');
+        throw new Error('Firebase service account not configured');
       }
     } catch (error) {
-      console.error('Error loading local service account:', error);
-      throw new Error('Failed to initialize Firebase Admin SDK with local credentials');
+      console.error('Error initializing Firebase Admin SDK:', error);
+      throw error;
     }
   }
 
-  // Initialize app with explicit credentials and options to disable metadata server access
-  admin.initializeApp({
-    credential,
-    projectId: process.env.FIREBASE_PROJECT_ID || 'contexto-local-dev',
-    // Explicitly setting this prevents attempts to connect to the metadata server
-    serviceAccountId: process.env.FIREBASE_CLIENT_EMAIL || 'firebase-adminsdk-local@contexto-local-dev.iam.gserviceaccount.com',
-  });
-  
-  // Initialize Firestore with settings - CRITICAL: This must be done only once and at module level
-  const db = admin.firestore();
+  if (!credential) {
+    throw new Error('Failed to initialize Firebase Admin credentials');
+  }
+
   try {
-    db.settings({ ignoreUndefinedProperties: true });
-    console.log('✅ Firestore settings configured successfully');
+    // Initialize Firebase Admin with the appropriate configuration
+    const firebaseConfig: admin.AppOptions = {
+      credential,
+      projectId: env.FIREBASE_PROJECT_ID,
+      // Use optional chaining and fallbacks for client-side environment variables
+      databaseURL: process.env.NEXT_PUBLIC_FIREBASE_DATABASE_URL || '',
+      storageBucket: env.FIREBASE_STORAGE_BUCKET || process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET || undefined,
+    };
+
+    admin.initializeApp(firebaseConfig);
+    
+    // Configure Firestore settings
+    const firestore = admin.firestore();
+    firestore.settings({
+      ignoreUndefinedProperties: true,
+    });
+    
+    console.log('Firebase Admin SDK initialized successfully');
   } catch (error) {
-    console.warn('⚠️ Firestore settings already configured, ignoring:', 
-      error instanceof Error ? error.message : String(error));
+    console.error('Error initializing Firebase Admin SDK:', error);
+    throw error;
   }
 }
 
 // Export the singleton instances
+export const db = admin.firestore();
 export const auth = admin.auth();
-export const firestore = admin.firestore();
+export const storage = admin.storage();
 
-// Export the admin SDK for other uses
 export default admin;

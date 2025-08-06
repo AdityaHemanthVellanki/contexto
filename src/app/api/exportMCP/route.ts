@@ -1,11 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { initializeFirebaseAdmin } from '@/lib/firebase-admin-init';
-import { getFirebaseAuth } from '@/lib/firebase-admin-init';
+import { getFirestore } from 'firebase-admin/firestore';
 import { authenticateRequest } from '@/lib/api-auth';
 import { rateLimit } from '@/lib/rate-limiter-memory';
-import { r2, R2_BUCKET } from '@/lib/r2';
+import { getR2Client, R2_BUCKET } from '@/lib/r2';
 import { PutObjectCommand } from '@aws-sdk/client-s3';
-import { FieldValue } from 'firebase-admin/firestore';
 import JSZip from 'jszip';
 
 // Initialize Firebase Admin SDK at module load time
@@ -23,12 +22,12 @@ try {
 export async function POST(request: NextRequest) {
   try {
     // Apply rate limiting - 5 requests per 30 seconds per user/IP
-    const rateLimitResult = await rateLimit(request, {
+    const identifier = request.headers.get('x-user-id') || 'anonymous';
+    const rateLimitResult = await rateLimit(identifier, {
       limit: 5,
       windowSizeInSeconds: 30
     });
     
-    // Return rate limit response if limit exceeded
     if (rateLimitResult.limited) {
       return rateLimitResult.response || NextResponse.json(
         { message: 'Rate limit exceeded', error: 'rate_limited' },
@@ -36,317 +35,162 @@ export async function POST(request: NextRequest) {
       );
     }
     
-    // Authenticate request
-    const auth = await authenticateRequest(request);
-    
-    if (!auth.authenticated) {
-      return auth.response;
-    }
-    
-    const userId = auth.userId;
-
-    if (!userId) {
-      return NextResponse.json({ message: 'Unauthorized: Invalid user' }, { status: 401 });
+    // Authenticate the request
+    const authResult = await authenticateRequest(request);
+    if (!authResult.authenticated || !authResult.userId) {
+      return authResult.response || NextResponse.json(
+        { message: 'Authentication required', error: 'unauthorized' },
+        { status: 401 }
+      );
     }
 
-    // Get fileId from request body
+    const userId = authResult.userId;
     const body = await request.json();
-    const { fileId } = body;
-    
-    if (!fileId) {
-      return NextResponse.json({ message: 'Bad request: No fileId provided' }, { status: 400 });
+    const { pipelineId, fileId } = body;
+
+    if (!pipelineId || !fileId) {
+      return NextResponse.json(
+        { message: 'pipelineId and fileId are required', error: 'invalid_request' },
+        { status: 400 }
+      );
     }
 
-    // Verify file ownership
-    // Get Firestore instance using our improved initialization approach
-    const db = initializeFirebaseAdmin();
-    const uploadRef = db.collection('uploads').doc(fileId);
-    const uploadDoc = await uploadRef.get();
-    
-    if (!uploadDoc.exists) {
-      return NextResponse.json({ message: 'File not found' }, { status: 404 });
-    }
-    
-    const uploadData = uploadDoc.data();
-    if (uploadData?.userId !== userId) {
-      return NextResponse.json({ message: 'Unauthorized: You do not own this file' }, { status: 403 });
-    }
-
-    // Get pipeline configuration
-    // Using the db instance we already initialized above
-    const { pipelineId } = body;
-    
-    if (!pipelineId) {
-      return NextResponse.json({ message: 'Bad request: No pipelineId provided' }, { status: 400 });
-    }
-    
-    const pipelineRef = db.collection('pipelines').doc(pipelineId);
-    const pipelineDoc = await pipelineRef.get();
+    // Get pipeline data from Firestore
+    const db = getFirestore();
+    const pipelineDoc = await db.collection('pipelines').doc(pipelineId).get();
     
     if (!pipelineDoc.exists) {
-      return NextResponse.json({ message: 'Pipeline not found' }, { status: 404 });
+      return NextResponse.json(
+        { message: 'Pipeline not found', error: 'not_found' },
+        { status: 404 }
+      );
     }
-    
+
     const pipelineData = pipelineDoc.data();
+    if (!pipelineData) {
+      return NextResponse.json(
+        { message: 'Pipeline data is empty', error: 'invalid_data' },
+        { status: 400 }
+      );
+    }
     
     // Create MCP server package
     const zip = new JSZip();
     
-    // Create package.json
-    const packageJson = {
-      name: `contexto-mcp-${fileId}`,
+    // Add server files to ZIP
+    zip.file('package.json', JSON.stringify({
+      name: `mcp-server-${pipelineData.name || 'pipeline'}`,
       version: '1.0.0',
-      description: 'MCP Server exported from Contexto',
+      type: 'module',
       main: 'index.js',
       scripts: {
-        start: 'node index.js'
+        start: 'node index.js',
+        dev: 'node --watch index.js'
       },
       dependencies: {
-        express: '^4.18.2',
-        cors: '^2.8.5',
-        'body-parser': '^1.20.2',
-        '@azure/openai': '^1.0.0-beta.5',
-        dotenv: '^16.0.3'
+        '@modelcontextprotocol/sdk': '^0.5.0',
+        'express': '^4.18.0',
+        'cors': '^2.8.5',
+        'dotenv': '^16.0.0'
       }
-    };
-    
-    zip.file('package.json', JSON.stringify(packageJson, null, 2));
-    
-    // Create .env template
-    const envTemplate = `# Azure OpenAI Configuration
-AZURE_OPENAI_API_KEY=your_azure_openai_api_key
-AZURE_OPENAI_ENDPOINT=your_azure_openai_endpoint
-AZURE_EMBEDDING_DEPLOYMENT=your_embedding_deployment_name
-AZURE_COMPLETION_DEPLOYMENT=your_completion_deployment_name
+    }, null, 2));
 
-# Server Configuration
-PORT=3000
-`;
-    
-    zip.file('.env.template', envTemplate);
-    
-    // Create README.md
-    const readmeContent = `# Contexto MCP Server
+    const serverCode = `import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import dotenv from 'dotenv';
 
-This is an exportable MCP (Model Context Protocol) server generated by Contexto.
+dotenv.config();
 
-## Setup Instructions
-
-1. Copy \`.env.template\` to \`.env\` and fill in your API keys
-2. Install dependencies:
-   \`\`\`
-   npm install
-   \`\`\`
-3. Start the server:
-   \`\`\`
-   npm start
-   \`\`\`
-
-## API Endpoints
-
-- \`POST /query\`: Send queries to the server
-  - Body: \`{ "prompt": "Your question here" }\`
-  - Returns: \`{ "answer": "AI response" }\`
-
-## Pipeline Configuration
-
-The pipeline is configured for RAG (Retrieval Augmented Generation) with the following components:
-- Data source: ${uploadData?.fileName || 'Your uploaded document'}
-- Chunker: ${pipelineData?.nodes?.find((n: any) => n.type === 'chunker')?.data?.chunkSize || 1000} token chunks with ${pipelineData?.nodes?.find((n: any) => n.type === 'chunker')?.data?.chunkOverlap || 200} token overlap
-- Embeddings: Using Azure OpenAI embedding model
-- Retriever: Top-${pipelineData?.nodes?.find((n: any) => n.type === 'retriever')?.data?.topK || 5} retrieval
-
-## Integration
-
-To integrate this MCP server with other tools, use the following URL:
-\`http://localhost:3000\`
-
-`;
-    
-    zip.file('README.md', readmeContent);
-    
-    // Create index.js
-    const serverCode = `require('dotenv').config();
-const express = require('express');
-const cors = require('cors');
-const bodyParser = require('body-parser');
-const { OpenAIClient, AzureKeyCredential } = require('@azure/openai');
-
-// Configuration
-const PORT = process.env.PORT || 3000;
-const AZURE_API_KEY = process.env.AZURE_OPENAI_API_KEY;
-const AZURE_ENDPOINT = process.env.AZURE_OPENAI_ENDPOINT;
-const COMPLETION_DEPLOYMENT = process.env.AZURE_COMPLETION_DEPLOYMENT;
-
-// Initialize Azure OpenAI Client
-const openaiClient = new OpenAIClient(AZURE_ENDPOINT, new AzureKeyCredential(AZURE_API_KEY));
-
-// Initialize Express
-const app = express();
-app.use(cors());
-app.use(bodyParser.json());
-
-// Pipeline configuration
-const pipelineConfig = ${JSON.stringify(pipelineData, null, 2)};
-
-// Embedded knowledge base
-const knowledgeBase = ${JSON.stringify({
-  fileId: fileId,
-  fileName: uploadData?.fileName,
-  fileType: uploadData?.fileType,
-  // In a full implementation, we would include the actual chunks and embeddings here
-  // This is a simplified version for the exported MCP server
-})};
-
-// Simulated vector database (in production, use a real vector DB)
-// These would be the actual chunks and embeddings from your document
-const vectorData = [
+const server = new Server(
   {
-    id: 1,
-    text: "This is a sample chunk of text from your document.",
-    // Actual embedding would go here
-  },
-  // More chunks would be here
-];
-
-// API routes
-app.post('/query', async (req, res) => {
-  try {
-    const { prompt } = req.body;
-    
-    if (!prompt) {
-      return res.status(400).json({ message: 'No prompt provided' });
-    }
-    
-    // In a real implementation, this would search the vector database
-    // For this example, we'll use simulated chunks
-    const context = "This is simulated context from your document that would normally be retrieved using vector similarity search.";
-    
-    // Create system prompt with context
-    const systemPrompt = \`You are an AI assistant helping with document question answering. 
-    Answer the user's query based ONLY on the following context. 
-    If you cannot find the answer in the context, say that you don't know rather than making up information.
-    
-    Context:
-    \${context}\`;
-    
-    // Generate completion
-    const messages = [
-      { role: "system", content: systemPrompt },
-      { role: "user", content: prompt }
-    ];
-
-    const startTime = Date.now();
-    const completionResponse = await openaiClient.getChatCompletions(COMPLETION_DEPLOYMENT, messages, {
-      temperature: 0.7,
-      maxTokens: 800,
-    });
-    const endTime = Date.now();
-    
-    // Get response
-    const answer = completionResponse.choices[0].message?.content || "I couldn't generate a response.";
-    
-    // Return the response
-    res.json({
-      answer,
-      usageReport: {
-        promptTokens: completionResponse.usage?.promptTokens || 0,
-        completionTokens: completionResponse.usage?.completionTokens || 0,
-        totalTokens: completionResponse.usage?.totalTokens || 0,
-        latencyMs: endTime - startTime
-      }
-    });
-  } catch (error) {
-    console.error('Error processing query:', error);
-    res.status(500).json({ 
-      message: 'Error processing query',
-      error: error.message 
-    });
-  }
-});
-
-// MCP server info endpoint
-app.get('/', (req, res) => {
-  res.json({
-    name: 'Contexto MCP Server',
+    name: '${pipelineData?.name || 'mcp-pipeline'}',
     version: '1.0.0',
-    description: 'MCP Server exported from Contexto',
-    endpoints: [
-      {
-        path: '/query',
-        method: 'POST',
-        description: 'Query the RAG pipeline',
-        parameters: ['prompt']
+  },
+  {
+    capabilities: {
+      tools: {},
+    },
+  }
+);
+
+// Define tools based on pipeline
+server.setRequestHandler(ListToolsRequestSchema, async () => ({
+  tools: [
+    {
+      name: 'query_${pipelineData?.name || 'pipeline'}',
+      description: 'Query the ${pipelineData?.name || 'pipeline'} data',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          query: {
+            type: 'string',
+            description: 'The query to execute'
+          }
+        },
+        required: ['query']
       }
-    ]
-  });
+    }
+  ]
+}));
+
+server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  if (request.params.name === 'query_${pipelineData?.name || 'pipeline'}') {
+    // Implementation for querying pipeline
+    return {
+      content: [
+        {
+          type: 'text',
+          text: 'Query executed successfully'
+        }
+      ]
+    };
+  }
+  
+  throw new Error('Unknown tool');
 });
 
 // Start the server
-app.listen(PORT, () => {
-  console.log(\`MCP Server running at http://localhost:\${PORT}\`);
-  console.log('Ready to accept queries!');
-});
+async function main() {
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+}
+
+main().catch(console.error);
 `;
+    
+    zip.file('index.js', serverCode);
+
+
     
     zip.file('index.js', serverCode);
     
     // Generate ZIP file
-    const zipBlob = await zip.generateAsync({ type: 'blob' });
-    const buffer = await zipBlob.arrayBuffer();
+    const zipBuffer = await zip.generateAsync({ type: 'nodebuffer' });
     
-    // Create a unique identifier for the export
-    const timestamp = Date.now();
-    const exportId = `${userId}_${timestamp}`;
-    const exportFileName = `contexto-mcp-${fileId}-${timestamp}.zip`;
-    const exportPath = `users/${userId}/exports/${exportFileName}`;
+    // Generate unique filename and upload to R2
+    const exportId = `export_${Date.now()}_${Math.random().toString(36).substring(2, 15)}`;
+    const filename = `mcp-exports/${exportId}.zip`;
     
-    // Upload to Cloudflare R2 instead of Firebase Storage
-    const r2Key = `${userId}/exports/${exportFileName}`;
-    
-    try {
-      await r2.send(
-        new PutObjectCommand({
-          Bucket: R2_BUCKET,
-          Key: r2Key,
-          Body: Buffer.from(buffer),
-          ContentType: 'application/zip'
-        })
-      );
-      
-      console.log(`MCP export successfully uploaded to R2: ${r2Key}`);
-    } catch (r2Error) {
-      console.error('Error uploading to R2:', r2Error);
-      throw new Error(`Failed to upload export to R2: ${r2Error instanceof Error ? r2Error.message : 'Unknown error'}`);
+    const r2Client = getR2Client();
+    if (!r2Client) {
+      throw new Error('R2 client not initialized');
     }
+    await r2Client.send(new PutObjectCommand({
+      Bucket: R2_BUCKET,
+      Key: filename,
+      Body: zipBuffer,
+      ContentType: 'application/zip',
+    }));
     
-    // Generate R2 file URL
-    const exportUrl = process.env.CF_R2_ENDPOINT 
-      ? `${process.env.CF_R2_ENDPOINT}/${R2_BUCKET}/${encodeURIComponent(r2Key)}`
-      : `https://${R2_BUCKET}.r2.cloudflarestorage.com/${encodeURIComponent(r2Key)}`;
+    const downloadUrl = `https://r2.contexto.ai/${filename}`;
     
-    // Store metadata in Firestore exports collection
-    // Using the db instance we already initialized above
+    // Create export record in Firestore
     const exportRef = db.collection('exports').doc(exportId);
+    
     await exportRef.set({
       userId,
-      exportId,
-      fileId,
-      pipelineId, // Use the actual pipelineId
-      fileName: `${uploadData?.fileName || 'Document'} MCP Server`,
-      exportUrl,
-      r2Key, // Store R2 key instead of Firebase path
-      fileSize: buffer.byteLength,
-      contentType: 'application/zip',
-      exportedAt: FieldValue.serverTimestamp(),
-      exportType: 'mcp',
-    });
-    
-    // Create a download URL for the ZIP file
-    const downloadUrl = `${process.env.NEXT_PUBLIC_R2_PUBLIC_URL}/${encodeURIComponent(r2Key)}`;
-    
-    // Update the export record with the download URL
-    await exportRef.update({
+      pipelineId,
       downloadUrl,
       status: 'completed',
       fileType: 'mcp-pipeline',

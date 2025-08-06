@@ -1,14 +1,9 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Card } from '@/components/ui/card';
-import { ScrollArea } from '@/components/ui/scroll-area';
+import { v4 as uuidv4 } from 'uuid';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '@/hooks/useAuth';
-import { useToast } from '@/hooks/useToast';
-import { v4 as uuidv4 } from 'uuid';
 import { getAuth } from 'firebase/auth';
 import { app } from '@/lib/firebase';
 import { Upload, Download, Loader2, Rocket, ChevronDown, AlertCircle } from 'lucide-react';
@@ -35,17 +30,8 @@ interface Message {
     vsixUrl?: string;
     vectorStoreEndpoint?: string;
     storeType?: string;
-    [key: string]: unknown; // Allow additional properties
+    serviceId?: string;
   };
-  // Add direct properties for backward compatibility
-  fileId?: string;
-  fileName?: string;
-  downloadUrl?: string;
-  pipelineId?: string;
-  mcpUrl?: string;
-  vsixUrl?: string;
-  vectorStoreEndpoint?: string;
-  storeType?: string;
 }
 
 type ChatState = 'welcome' | 'file-upload' | 'purpose-input' | 'processing' | 'complete' | 'deploying';
@@ -345,45 +331,77 @@ export default function SimpleChatWindow({ chatId }: SimpleChatWindowProps) {
       setChatState('deploying');
 
       // Add deployment start message
-      addMessage('ai', '🚀 Starting deployment process...');
+      addMessage('ai', '🚀 Deploying your MCP server...');
 
-      // Get Firebase ID token for authentication
+      // Get Firebase ID token
       const auth = getAuth(app);
       const firebaseUser = auth.currentUser;
       if (!firebaseUser) throw new Error('No authenticated user found');
       const token = await firebaseUser.getIdToken();
 
-      // Call the server API to handle the deployment
-      const response = await fetch('/api/deployPipeline', {
+      // Step 1: Deploy Vector Store
+      addMessage('ai', '📊 Provisioning vector store...');
+      const vectorStoreResponse = await fetch('/api/deployVectorStore', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
         },
-        body: JSON.stringify({ 
-          fileId, 
-          pipelineId 
-        })
+        body: JSON.stringify({ fileId, pipelineId })
       });
-      
-      const result = await response.json();
-      
-      if (response.ok) {
-        addMessage('ai', `✅ MCP server deployed successfully!\n\n🔗 **Live URL:** ${result.mcpUrl}\n\nYour server is now live and ready to use. Connect to it using any MCP client.`, {
-          mcpUrl: result.mcpUrl,
-          vsixUrl: result.vsixUrl,
-          pipelineId,
-          fileId
-        });
-      } else {
-        throw new Error(result.error || 'Deployment failed');
+
+      if (!vectorStoreResponse.ok) {
+        const error = await vectorStoreResponse.json();
+        throw new Error(error.error || 'Vector store deployment failed');
       }
+
+      const { vectorStoreEndpoint, storeType } = await vectorStoreResponse.json();
+      addMessage('ai', `✅ Vector store deployed: ${storeType}`);
+
+      // Step 2: Deploy MCP Server and generate VS Code extension
+      addMessage('ai', '🚀 Deploying MCP server to Heroku and generating VS Code extension...');
+      const serverResponse = await fetch('/api/deployServer', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ pipelineId, fileId })
+      });
+
+      if (!serverResponse.ok) {
+        const error = await serverResponse.json();
+        throw new Error(error.error || 'Server deployment failed');
+      }
+
+      const { mcpUrl, vsixUrl, serviceId } = await serverResponse.json();
+
+      // Success message with deployment details
+      setChatState('complete');
+      addMessage('ai', `✅ Heroku deployment complete!
+
+• **MCP endpoint:** ${mcpUrl}
+• **[Download VS Code extension](${vsixUrl})**
+
+**Install in VS Code:**
+\`\`\`bash
+code --install-extension ${vsixUrl.split('/').pop()}
+\`\`\`
+
+Then run "Contexto: Ask MCP" command in VS Code!`, {
+        mcpUrl,
+        vsixUrl,
+        vectorStoreEndpoint,
+        storeType,
+        serviceId
+      });
+
     } catch (error) {
       console.error('Deployment error:', error);
       addMessage('ai', `❌ Deployment failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      setChatState('complete'); // Allow retry
     } finally {
       setIsDeploying(false);
-      setChatState('complete');
     }
   };
 
@@ -427,16 +445,7 @@ export default function SimpleChatWindow({ chatId }: SimpleChatWindowProps) {
             
             {message.metadata.fileId && message.metadata.pipelineId && !message.metadata.mcpUrl && (
               <button
-                onClick={() => {
-                  const fileId = message.metadata?.fileId || message.fileId;
-                  const pipelineId = message.metadata?.pipelineId || message.pipelineId;
-                  if (fileId && pipelineId) {
-                    deployPipeline(fileId, pipelineId);
-                  } else {
-                    console.error('Missing fileId or pipelineId in message metadata');
-                    addMessage('ai', '❌ Deployment failed: Missing required parameters');
-                  }
-                }}
+                onClick={() => deployPipeline(message.metadata!.fileId!, message.metadata!.pipelineId!)}
                 disabled={isDeploying}
                 className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white rounded-lg transition-colors"
               >
@@ -484,6 +493,65 @@ export default function SimpleChatWindow({ chatId }: SimpleChatWindowProps) {
       </div>
     </motion.div>
   );
+
+  const deployVectorStore = async (fileId: string, storeType: string) => {
+    if (!user) return;
+
+    try {
+      const result = await fetch('/api/deployVectorStore', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${await getAuth(app).currentUser?.getIdToken()}`,
+        },
+        body: JSON.stringify({ fileId, storeType }),
+      });
+
+      if (!result.ok) {
+        throw new Error((await result.json()).error || 'Vector store deployment failed');
+      }
+
+      return await result.json();
+    } catch (error) {
+      console.error('Vector store deployment error:', error);
+      throw error;
+    }
+  };
+
+  const handleVectorStoreDeployment = async (fileId: string, storeType: string) => {
+    try {
+      const result = await deployVectorStore(fileId, storeType);
+
+      if (result.success) {
+        setMessages(prev => [
+          ...prev,
+          {
+            id: `vector-store-${Date.now()}`,
+            type: 'ai',
+            content: `Vector store created successfully!\n\n**Index Name**: ${result.indexName}`,
+          }
+        ]);
+      } else {
+        setMessages(prev => [
+          ...prev,
+          {
+            id: `vector-store-error-${Date.now()}`,
+            type: 'ai',
+            content: `Vector store creation failed: ${result.error}`,
+          }
+        ]);
+      }
+    } catch (error) {
+      setMessages(prev => [
+        ...prev,
+        {
+          id: `vector-store-error-${Date.now()}`,
+          type: 'ai',
+          content: `Vector store creation failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        }
+      ]);
+    }
+  };
 
   return (
     <div className="flex flex-col h-screen bg-white dark:bg-black">

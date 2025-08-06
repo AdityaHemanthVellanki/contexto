@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { r2, R2_BUCKET } from './r2';
+import { getR2Client, R2_BUCKET } from './r2';
 import { PutObjectCommand } from '@aws-sdk/client-s3';
 import JSZip from 'jszip';
 
@@ -31,6 +31,13 @@ const PipelineSchema = z.object({
 
 type Pipeline = z.infer<typeof PipelineSchema>;
 
+type ServerEnv = {
+  env: {
+    NODE_ENV: 'development' | 'production';
+    cwd?: string;
+  };
+};
+
 /**
  * Export MCP pipeline as a downloadable ZIP package
  */
@@ -58,7 +65,7 @@ export async function exportMCPPipeline(pipeline: Pipeline, userId: string): Pro
     // 4. Add vectorStoreClient.js
     const fs = require('fs');
     const path = require('path');
-    const vectorStoreClientPath = path.join(process.cwd(), 'src', 'lib', 'templates', 'vectorStoreClient.js');
+    const vectorStoreClientPath = path.join(__dirname, 'templates', 'vectorStoreClient.js');
     const vectorStoreClient = fs.readFileSync(vectorStoreClientPath, 'utf8');
     zip.file('vectorStoreClient.js', vectorStoreClient);
 
@@ -81,20 +88,37 @@ export async function exportMCPPipeline(pipeline: Pipeline, userId: string): Pro
     const exportId = `${userId}_${Date.now()}`;
     const r2Key = `users/${userId}/exports/${exportId}/mcp-pipeline.zip`;
 
-    await r2.send(new PutObjectCommand({
+    const client = getR2Client();
+    if (!client) {
+      throw new Error('R2 client not initialized');
+    }
+    
+    const command = new PutObjectCommand({
       Bucket: R2_BUCKET,
       Key: r2Key,
       Body: zipBuffer,
       ContentType: 'application/zip',
       ContentDisposition: `attachment; filename="mcp-pipeline-${validatedPipeline.id}.zip"`
+<<<<<<< HEAD
+    });
+    
+    const result = await client.send(command);
+
+    // Use the export service to generate a presigned URL
+    const { getPipelineExportUrl } = await import('../services/exportService');
+    const downloadUrl = await getPipelineExportUrl(userId, exportId);
+    
+    // Log the generated URL (without query params for security)
+    const urlObj = new URL(downloadUrl);
+    console.log('mcpExporter: generated presigned URL for', `${urlObj.origin}${urlObj.pathname}`);
+=======
     }));
 
-    // Use the export service to ensure consistent URL generation
-    const { getPipelineExportUrl } = await import('../services/exportService');
-    const downloadUrl = getPipelineExportUrl(userId, exportId);
-    
-    // Log the generated URL for debugging
-    console.log('mcpExporter: generated downloadUrl =', downloadUrl);
+    // Generate download URL
+    const downloadUrl = process.env.CF_R2_ENDPOINT 
+      ? `${process.env.CF_R2_ENDPOINT}/${R2_BUCKET}/${encodeURIComponent(r2Key)}`
+      : `https://${R2_BUCKET}.r2.cloudflarestorage.com/${encodeURIComponent(r2Key)}`;
+>>>>>>> parent of 4ebe2a0 (added heroku deployment for mcp)
 
     // Log export to Firestore
     await logExport(exportId, validatedPipeline.id, userId, r2Key, downloadUrl);
@@ -265,6 +289,10 @@ class MCPPipelineServer {
   }
 
   chunkText(text, chunkSize) {
+    const client = getR2Client();
+    if (!client) {
+      throw new Error('R2 client not initialized');
+    }
     const chunks = [];
     const overlap = Math.floor(chunkSize * 0.1);
     
@@ -304,6 +332,7 @@ if (require.main === module) {
 
 module.exports = MCPPipelineServer;
 `;
+
 }
 
 /**

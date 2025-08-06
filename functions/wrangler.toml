@@ -1,0 +1,40 @@
+name = "contexto-mcp-worker"
+main = "index.ts"
+compatibility_date = "2023-05-18"
+
+# Environment variables (set via wrangler secret put in production)
+# These will be available in your Worker as env.VAR_NAME
+# [vars]
+# EXAMPLE_VAR = "example-value"
+
+# R2 Bucket bindings
+[[r2_buckets]]
+binding = "UPLOADS"
+bucket_name = "contexto-uploads"
+
+# Enable modules format
+[build.upload]
+format = "modules"
+main = "./index.ts"
+
+# Add build command to install dependencies
+[build]
+command = "npm install"
+
+# Development settings
+[dev]
+ip = "0.0.0.0"
+port = 8787
+local_protocol = "http"
+
+# Production environment
+[env.production]
+name = "contexto-mcp-worker-prod"
+route = ""
+zone_id = ""
+
+# Staging environment
+[env.staging]
+name = "contexto-mcp-worker-staging"
+route = ""
+zone_id = ""

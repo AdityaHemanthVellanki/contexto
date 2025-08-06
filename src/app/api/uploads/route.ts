@@ -16,6 +16,13 @@ interface UploadRequest {
  */
 export const POST = withAuth(async (req) => {
   try {
+<<<<<<< HEAD
+    // Apply rate limiting - 10 requests per 5 seconds per user/IP
+    const identifier = request.headers.get('x-user-id') || request.headers.get('x-forwarded-for') || 'anonymous';
+    const rateLimitResult = await rateLimit(identifier, {
+      limit: 10,
+      windowSizeInSeconds: 5
+=======
     const body: UploadRequest = await req.json();
     const { fileName, fileSize, contentType } = body;
 
@@ -40,6 +47,7 @@ export const POST = withAuth(async (req) => {
       fileId,
       uploadUrl,
       r2Key
+>>>>>>> db67cbcf19fab530d2b300d56dd527b2d7d1df52
     });
   } catch (error) {
     console.error('Upload URL generation error:', error);

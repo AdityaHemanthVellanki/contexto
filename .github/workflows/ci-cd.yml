@@ -13,6 +13,20 @@ jobs:
     
     # Environment variables for the build process
     env:
+<<<<<<< HEAD
+      # Public Firebase config
+      NEXT_PUBLIC_FIREBASE_API_KEY: ${{ vars.NEXT_PUBLIC_FIREBASE_API_KEY || secrets.NEXT_PUBLIC_FIREBASE_API_KEY || '' }}
+      NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: ${{ vars.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN || secrets.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN || '' }}
+      NEXT_PUBLIC_FIREBASE_PROJECT_ID: ${{ vars.NEXT_PUBLIC_FIREBASE_PROJECT_ID || secrets.NEXT_PUBLIC_FIREBASE_PROJECT_ID || '' }}
+      NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET: ${{ vars.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET || secrets.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET || '' }}
+      NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID: ${{ vars.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID || secrets.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID || '' }}
+      NEXT_PUBLIC_FIREBASE_APP_ID: ${{ vars.NEXT_PUBLIC_FIREBASE_APP_ID || secrets.NEXT_PUBLIC_FIREBASE_APP_ID || '' }}
+      
+      # Firebase Admin SDK credentials for server-side testing
+      FIREBASE_PROJECT_ID: ${{ vars.FIREBASE_PROJECT_ID || secrets.FIREBASE_PROJECT_ID || '' }}
+      FIREBASE_CLIENT_EMAIL: ${{ vars.FIREBASE_CLIENT_EMAIL || secrets.FIREBASE_CLIENT_EMAIL || '' }}
+      FIREBASE_PRIVATE_KEY: ${{ vars.FIREBASE_PRIVATE_KEY || secrets.FIREBASE_PRIVATE_KEY || '' }}
+=======
       NEXT_PUBLIC_FIREBASE_API_KEY: ${{ secrets.NEXT_PUBLIC_FIREBASE_API_KEY }}
       NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: ${{ secrets.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN }}
       NEXT_PUBLIC_FIREBASE_PROJECT_ID: ${{ secrets.NEXT_PUBLIC_FIREBASE_PROJECT_ID }}
@@ -23,6 +37,7 @@ jobs:
       FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
       FIREBASE_CLIENT_EMAIL: ${{ secrets.FIREBASE_CLIENT_EMAIL }}
       FIREBASE_PRIVATE_KEY: ${{ secrets.FIREBASE_PRIVATE_KEY }}
+>>>>>>> db67cbcf19fab530d2b300d56dd527b2d7d1df52
       
     steps:
       - name: Checkout code
@@ -51,7 +66,11 @@ jobs:
         # Only run if this is the main repository
         if: ${{ github.repository == 'AdityaHemanthVellanki/contexto' }}
         with:
+<<<<<<< HEAD
+          token: ${{ vars.CODECOV_TOKEN || secrets.CODECOV_TOKEN || '' }}
+=======
           token: ${{ secrets.CODECOV_TOKEN }}
+>>>>>>> db67cbcf19fab530d2b300d56dd527b2d7d1df52
           fail_ci_if_error: false
           
   deploy:
@@ -81,9 +100,15 @@ jobs:
         # Only run deploy step on the main repo
         if: ${{ github.repository == 'AdityaHemanthVellanki/contexto' }}
         env:
+<<<<<<< HEAD
+          HEROKU_API_KEY: ${{ vars.HEROKU_API_KEY || secrets.HEROKU_API_KEY || '' }}
+          HEROKU_TEAM: ${{ vars.HEROKU_TEAM || secrets.HEROKU_TEAM || '' }}
+          HEROKU_REGION: ${{ vars.HEROKU_REGION || secrets.HEROKU_REGION || 'us' }}
+=======
           HEROKU_API_KEY: ${{ secrets.HEROKU_API_KEY }}
           HEROKU_TEAM: ${{ secrets.HEROKU_TEAM }}
           HEROKU_REGION: ${{ secrets.HEROKU_REGION }}
+>>>>>>> db67cbcf19fab530d2b300d56dd527b2d7d1df52
         run: |
           npm install -g heroku
           heroku container:login

@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getVectorIndex } from '@/lib/pinecone';
+import { getPineconeIndex } from '@/lib/pinecone';
 import { authenticateRequest } from '@/lib/api-auth';
 import { deployToHeroku, sanitizeAppName } from '@/lib/heroku';
+import { hasProperty } from '@/lib/typeUtils';
 
 export const runtime = 'nodejs';
 
@@ -20,6 +21,11 @@ interface HerokuDeploymentResult {
   webUrl?: string;
 }
 
+interface DeployPipelineRequestBody {
+  pipelineId: string;
+  fileId: string;
+}
+
 export async function POST(request: NextRequest) {
   try {
     // Authenticate the request
@@ -30,19 +36,21 @@ export async function POST(request: NextRequest) {
     
     const userId = authResult.userId;
 
-    const { pipelineId, fileId } = await request.json();
-
-    if (!pipelineId || !fileId) {
+    const body = await request.json();
+    
+    if (!hasProperty(body, 'pipelineId') || !hasProperty(body, 'fileId')) {
       return NextResponse.json(
         { error: 'Missing required parameters: pipelineId or fileId' },
         { status: 400 }
       );
     }
+    
+    const { pipelineId, fileId } = body as DeployPipelineRequestBody;
 
     console.log(`Starting deployment for pipeline ${pipelineId}, file ${fileId}`);
 
     // Step 1: Process documents and store in vector store if needed
-    const vectorIndex = getVectorIndex();
+    const vectorIndex = getPineconeIndex();
     
     // Here you would typically fetch the file content and process it
     // For now, we'll just log that we're skipping this step
