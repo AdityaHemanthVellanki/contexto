@@ -28,7 +28,7 @@ export async function getFirebaseAdmin(): Promise<App> {
   if (firebaseInitialized && firebaseApp) {
     try {
       // Quick validation to ensure the instance is still working
-      admin.auth();
+      getFirebaseAuth(firebaseApp);
       return firebaseApp;
     } catch (error) {
       console.warn('⚠️ Existing Firebase app appears invalid, reinitializing...', error);

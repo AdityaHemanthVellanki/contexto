@@ -114,13 +114,43 @@ export async function processFileToChunks(
 }
 
 /**
+ * Process description into chunks for MCP creation without files
+ */
+export async function processDescriptionToChunks(
+  description: string,
+  pipelineId: string
+): Promise<Array<{
+  id: string;
+  text: string;
+  metadata: {
+    pipelineId: string;
+    chunkIndex: number;
+    totalChunks: number;
+    source: 'description';
+  };
+}>> {
+  const cleanedText = cleanText(description);
+  const chunks = chunkText(cleanedText);
+  
+  return chunks.map((chunk, index) => ({
+    id: `${pipelineId}-desc-${index}`,
+    text: chunk,
+    metadata: {
+      pipelineId,
+      chunkIndex: index,
+      totalChunks: chunks.length,
+      source: 'description' as const
+    }
+  }));
+}
+
+/**
  * Clean and normalize text
  */
 export function cleanText(text: string): string {
   return text
     .replace(/\s+/g, ' ')
-    .replace(/\n+/g, ' ')
-    .replace(/\t+/g, ' ')
+    .replace(/[\r\n]+/g, ' ')
     .trim();
 }
 

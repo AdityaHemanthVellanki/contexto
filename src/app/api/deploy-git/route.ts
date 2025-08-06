@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { deployToHerokuWithGit } from '@/services/gitDeployService';
 import { ensureAuthenticated } from '@/lib/auth';
-import { exportMCPPipeline } from '@/lib/mcpExporter';
+import { exportMCPBundle } from '@/lib/mcp-exporter';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -27,28 +27,16 @@ export async function POST(request: NextRequest) {
 
     console.log(`deploy-git: Starting Git deployment for pipeline ${pipelineId}`);
 
-    // Step 1: Export the pipeline to a temporary directory
+    // Step 1: Export the pipeline using the real MCP exporter
     console.log('deploy-git: Exporting pipeline...');
-    // For now, create a mock pipeline object - this should be fetched from Firestore
-    const mockPipeline = {
-      id: pipelineId,
-      metadata: {
-        author: userId,
-        createdAt: new Date().toISOString(),
-        fileName: 'pipeline.json',
-        fileType: 'application/json',
-        purpose: 'MCP Pipeline Export',
-        vectorStore: 'pinecone',
-        chunksCount: 0,
-        chunkSize: 1000,
-        overlap: 200
-      },
-      nodes: [],
-      edges: []
-    };
+    const { exportId, downloadUrl } = await exportMCPBundle(pipelineId, userId);
+    console.log(`deploy-git: Pipeline exported with ID ${exportId}`);
     
-    // TODO: Implement proper pipeline export
-    const exportUrl = `https://contexto-exports.s3.amazonaws.com/pipeline-${pipelineId}.zip`;
+    // Verify export is accessible
+    const headResponse = await fetch(downloadUrl, { method: 'HEAD' });
+    if (!headResponse.ok) {
+      throw new Error(`Export not accessible: ${headResponse.statusText}`);
+    }
 
     // Create temporary directory for pipeline files
     const tempDir = path.join(os.tmpdir(), `pipeline-${pipelineId}-${Date.now()}`);
@@ -103,7 +91,8 @@ server.start();
       return NextResponse.json({
         success: true,
         deployment: deploymentResult,
-        exportUrl,
+        exportUrl: downloadUrl,
+        exportId,
         message: 'Pipeline deployed successfully via Git'
       });
 

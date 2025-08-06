@@ -18,7 +18,7 @@ describe('Usage Service', () => {
   
   beforeAll(async () => {
     // Initialize real Firebase Admin SDK for testing
-    const firebaseAdmin = getFirebaseAdmin();
+    const firebaseAdmin = await getFirebaseAdmin();
     db = firebaseAdmin.firestore();
     
     // Create a test document to verify connection works

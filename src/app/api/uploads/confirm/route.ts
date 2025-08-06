@@ -1,5 +1,6 @@
 import { NextRequest } from 'next/server';
 import { withAuth, errorResponse, successResponse } from '@/lib/api-middleware';
+import { generateDownloadUrl } from '@/lib/r2-client';
 import { doc, setDoc } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 
@@ -21,6 +22,25 @@ export const POST = withAuth(async (req) => {
 
     if (!fileId || !fileName || !fileSize || !contentType || !r2Key) {
       return errorResponse('Missing required fields');
+    }
+
+    // Verify file exists in R2 storage with HEAD request
+    try {
+      const downloadUrl = await generateDownloadUrl(r2Key);
+      const headResponse = await fetch(downloadUrl, { method: 'HEAD' });
+      
+      if (!headResponse.ok) {
+        return errorResponse('File not found in storage. Please re-upload the file.', 404);
+      }
+      
+      // Verify file size matches
+      const actualSize = parseInt(headResponse.headers.get('content-length') || '0');
+      if (actualSize !== fileSize) {
+        return errorResponse(`File size mismatch. Expected ${fileSize} bytes, found ${actualSize} bytes.`, 400);
+      }
+    } catch (error) {
+      console.error('File verification error:', error);
+      return errorResponse('Failed to verify file in storage. Please try again.', 500);
     }
 
     // Store file metadata in Firestore

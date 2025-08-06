@@ -7,6 +7,7 @@ import { useAuth } from '@/context/AuthContext';
 import { useToast } from '@/components/ui/toast';
 import { FileUploadStep, ToolConfigStep, ReviewLaunchStep } from './wizard-steps';
 import PipelineProgress from '../pipeline/PipelineProgress';
+import MCPChatInterface from '../chat/MCPChatInterface';
 
 interface MCPWizardProps {
   onComplete: (pipelineId: string) => void;
@@ -33,6 +34,7 @@ export default function MCPWizard({ onComplete, onCancel }: MCPWizardProps) {
   const [isProcessing, setIsProcessing] = useState(false);
   const [pipelineId, setPipelineId] = useState<string | null>(null);
   const [showProgress, setShowProgress] = useState(false);
+  const [showChat, setShowChat] = useState(false);
   
   // Data collected through the wizard
   const [wizardData, setWizardData] = useState({
@@ -147,6 +149,11 @@ export default function MCPWizard({ onComplete, onCancel }: MCPWizardProps) {
   
   const handlePipelineComplete = () => {
     setIsProcessing(false);
+    setShowProgress(false);
+    setShowChat(true);
+  };
+
+  const handleChatComplete = () => {
     if (pipelineId) {
       onComplete(pipelineId);
     }
@@ -167,6 +174,17 @@ export default function MCPWizard({ onComplete, onCancel }: MCPWizardProps) {
 
   if (showProgress && pipelineId) {
     return <PipelineProgress pipelineId={pipelineId} onComplete={handlePipelineComplete} />;
+  }
+
+  if (showChat && pipelineId) {
+    return (
+      <MCPChatInterface 
+        pipelineId={pipelineId} 
+        pipelineName={wizardData.pipelineName}
+        onDeploy={handleChatComplete}
+        onExport={handleChatComplete}
+      />
+    );
   }
 
   // Step components

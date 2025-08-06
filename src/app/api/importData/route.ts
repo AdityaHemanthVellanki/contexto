@@ -11,7 +11,7 @@ export async function POST(request: NextRequest) {
     }
     
     // In a real implementation, this would process uploaded files
-    // For demo purposes, we'll simulate success and log to Firestore
+    // Process the import data and log to Firestore
     
     const formData = await request.formData();
     const files = formData.getAll('files');

@@ -179,11 +179,33 @@ export async function queryEmbeddings(
  */
 export async function deleteIndex(indexName: string): Promise<void> {
   try {
-    // @ts-ignore - Pinecone SDK v6.1.2 has deleteIndex method but TypeScript doesn't recognize it
+    console.log(`Deleting index: ${indexName}`);
+    // @ts-ignore - Pinecone SDK v6 typing issue
     await pinecone.deleteIndex(indexName);
-    console.log(`Deleted Pinecone index: ${indexName}`);
+    console.log(`Index ${indexName} deleted successfully`);
   } catch (error) {
-    console.error('Pinecone delete index error:', error);
-    throw new Error('Failed to delete index');
+    console.error(`Error deleting index ${indexName}:`, error);
+    throw new Error(`Failed to delete index ${indexName}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
+}
+
+// Delete embeddings by document ID
+export async function deleteEmbeddings(docId: string, indexName: string, namespace = ''): Promise<void> {
+  try {
+    console.log(`Deleting embeddings for document ${docId} from index ${indexName}${namespace ? ` namespace ${namespace}` : ''}`);
+    
+    const index = pinecone.index(indexName);
+    
+    // Delete vectors by filter on docId metadata field
+    // @ts-ignore - Pinecone SDK v6 typing issue
+    await index.deleteMany({
+      filter: { docId },
+      namespace
+    });
+    
+    console.log(`Embeddings for document ${docId} deleted successfully`);
+  } catch (error) {
+    console.error(`Error deleting embeddings for document ${docId}:`, error);
+    throw new Error(`Failed to delete embeddings for document ${docId}: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
 }

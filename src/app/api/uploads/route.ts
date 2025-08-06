@@ -23,14 +23,8 @@ export const POST = withAuth(async (req) => {
       return errorResponse('Missing required fields: fileName, fileSize, contentType');
     }
 
-    // Validate file (create a mock File object for validation)
-    const mockFile = {
-      name: fileName,
-      size: fileSize,
-      type: contentType
-    } as File;
-
-    const validation = validateFile(mockFile);
+    // Validate file parameters
+    const validation = validateFile({ name: fileName, size: fileSize, type: contentType } as File);
     if (!validation.valid) {
       return errorResponse(validation.error!);
     }
