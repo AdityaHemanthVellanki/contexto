@@ -3,7 +3,7 @@
  * Tests the complete pipeline from file upload to deployment
  */
 
-import { describe, test, expect, beforeAll } from '@jest/test';
+import { describe, test, expect, beforeAll } from '@jest/globals';
 
 // Mock environment variables for testing
 const mockEnv = {
@@ -42,7 +42,8 @@ describe('Production Flow Integration Tests', () => {
 
     // This should not throw an error with valid parameters
     expect(async () => {
-      await POST(mockRequest);
+      const handler = await POST;
+      await handler(mockRequest, { params: {} });
     }).not.toThrow();
   });
 
@@ -73,7 +74,8 @@ describe('Production Flow Integration Tests', () => {
 
     // This should not throw a validation error
     expect(async () => {
-      await POST(mockRequest);
+      const handler = await POST;
+      await handler(mockRequest, { params: {} });
     }).not.toThrow();
   });
 
@@ -91,7 +93,8 @@ describe('Production Flow Integration Tests', () => {
 
     // This should not throw a validation error
     expect(async () => {
-      await POST(mockRequest);
+      const handler = await POST;
+      await handler(mockRequest, { params: {} });
     }).not.toThrow();
   });
 
@@ -109,7 +112,8 @@ describe('Production Flow Integration Tests', () => {
 
     // This should not throw a validation error
     expect(async () => {
-      await POST(mockRequest);
+      const handler = await POST;
+      await handler(mockRequest);
     }).not.toThrow();
   });
 });

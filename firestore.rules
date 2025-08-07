@@ -108,6 +108,22 @@ service cloud.firestore {
       allow update, delete: if false;
     }
 
+    // === MCP SERVERS ===
+    // MCP collection: mcps/{mcpId}
+    match /mcps/{mcpId} {
+      allow create: if request.auth != null && request.auth.uid == request.resource.data.userId;
+      allow read, update, delete: if request.auth != null && request.auth.uid == resource.data.userId;
+    }
+    
+    // MCP logs subcollection: mcps/{mcpId}/logs/{logId}
+    match /mcps/{mcpId}/logs/{logId} {
+      allow create: if request.auth != null && 
+                    get(/databases/$(db)/documents/mcps/$(mcpId)).data.userId == request.auth.uid;
+      allow read: if request.auth != null && 
+                  get(/databases/$(db)/documents/mcps/$(mcpId)).data.userId == request.auth.uid;
+      allow update, delete: if false; // Logs are immutable
+    }
+
     // === USAGE METRICS ===
     // Only allow server-side access via Admin SDK
     match /usage/{docId} {

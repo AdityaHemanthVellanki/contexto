@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Firebase Rules Test</title>
+  <script src="https://www.gstatic.com/firebasejs/9.6.10/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.6.10/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.6.10/firebase-firestore-compat.js"></script>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 20px;
+      line-height: 1.6;
+    }
+    h1 {
+      color: #333;
+    }
+    button {
+      background-color: #4285f4;
+      color: white;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 16px;
+      margin: 10px 0;
+    }
+    button:hover {
+      background-color: #3367d6;
+    }
+    pre {
+      background-color: #f5f5f5;
+      padding: 15px;
+      border-radius: 4px;
+      overflow-x: auto;
+    }
+    .result {
+      margin-top: 20px;
+    }
+    .success {
+      color: green;
+    }
+    .error {
+      color: red;
+    }
+  </style>
+</head>
+<body>
+  <h1>Firebase Firestore Rules Test</h1>
+  
+  <div>
+    <h2>Step 1: Configure Firebase</h2>
+    <p>Enter your Firebase configuration:</p>
+    <form id="configForm">
+      <div>
+        <label for="apiKey">API Key:</label>
+        <input type="text" id="apiKey" placeholder="Your Firebase API Key" style="width: 300px;">
+      </div>
+      <div>
+        <label for="authDomain">Auth Domain:</label>
+        <input type="text" id="authDomain" placeholder="your-project-id.firebaseapp.com" style="width: 300px;">
+      </div>
+      <div>
+        <label for="projectId">Project ID:</label>
+        <input type="text" id="projectId" placeholder="your-project-id" style="width: 300px;">
+      </div>
+      <div>
+        <label for="storageBucket">Storage Bucket:</label>
+        <input type="text" id="storageBucket" placeholder="your-project-id.appspot.com" style="width: 300px;">
+      </div>
+      <div>
+        <label for="messagingSenderId">Messaging Sender ID:</label>
+        <input type="text" id="messagingSenderId" placeholder="your-sender-id" style="width: 300px;">
+      </div>
+      <div>
+        <label for="appId">App ID:</label>
+        <input type="text" id="appId" placeholder="1:your-app-id" style="width: 300px;">
+      </div>
+      <button type="button" id="initializeFirebase">Initialize Firebase</button>
+    </form>
+  </div>
+
+  <div>
+    <h2>Step 2: Sign In</h2>
+    <button id="signInWithGoogle" disabled>Sign In with Google</button>
+    <div id="userInfo"></div>
+  </div>
+
+  <div>
+    <h2>Step 3: Test Firestore Rules</h2>
+    <button id="testMcpsCollection" disabled>Test MCPs Collection</button>
+    <button id="testMcpsLogsCollection" disabled>Test MCPs Logs Collection</button>
+    <div id="testResults" class="result"></div>
+  </div>
+
+  <script>
+    let firebaseApp;
+    let currentUser;
+
+    // Initialize Firebase with configuration
+    document.getElementById('initializeFirebase').addEventListener('click', function() {
+      const apiKey = document.getElementById('apiKey').value;
+      const authDomain = document.getElementById('authDomain').value;
+      const projectId = document.getElementById('projectId').value;
+      const storageBucket = document.getElementById('storageBucket').value;
+      const messagingSenderId = document.getElementById('messagingSenderId').value;
+      const appId = document.getElementById('appId').value;
+
+      if (!apiKey || !authDomain || !projectId) {
+        alert('Please fill in at least API Key, Auth Domain, and Project ID');
+        return;
+      }
+
+      const firebaseConfig = {
+        apiKey,
+        authDomain,
+        projectId,
+        storageBucket,
+        messagingSenderId,
+        appId
+      };
+
+      try {
+        // Initialize Firebase
+        firebaseApp = firebase.initializeApp(firebaseConfig);
+        document.getElementById('signInWithGoogle').disabled = false;
+        
+        logResult('Firebase initialized successfully!', true);
+      } catch (error) {
+        logResult(`Firebase initialization error: ${error.message}`, false);
+      }
+    });
+
+    // Sign in with Google
+    document.getElementById('signInWithGoogle').addEventListener('click', function() {
+      const provider = new firebase.auth.GoogleAuthProvider();
+      
+      firebase.auth().signInWithPopup(provider)
+        .then((result) => {
+          currentUser = result.user;
+          document.getElementById('userInfo').innerHTML = `
+            <p>Signed in as: ${currentUser.displayName} (${currentUser.email})</p>
+            <p>User ID: ${currentUser.uid}</p>
+          `;
+          document.getElementById('testMcpsCollection').disabled = false;
+          document.getElementById('testMcpsLogsCollection').disabled = false;
+          logResult('Successfully signed in!', true);
+        })
+        .catch((error) => {
+          logResult(`Authentication error: ${error.message}`, false);
+        });
+    });
+
+    // Test MCPs collection
+    document.getElementById('testMcpsCollection').addEventListener('click', function() {
+      if (!currentUser) {
+        logResult('Please sign in first', false);
+        return;
+      }
+
+      const db = firebase.firestore();
+      const mcpsRef = db.collection('mcps');
+      
+      // Test reading MCPs
+      mcpsRef.where('userId', '==', currentUser.uid).limit(5).get()
+        .then((snapshot) => {
+          logResult(`Successfully read MCPs collection. Found ${snapshot.size} documents.`, true);
+          
+          // Test writing to MCPs
+          return mcpsRef.add({
+            userId: currentUser.uid,
+            title: 'Test MCP',
+            fileName: 'test.txt',
+            status: 'complete',
+            createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+            updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+          });
+        })
+        .then((docRef) => {
+          logResult(`Successfully created MCP document with ID: ${docRef.id}`, true);
+          
+          // Clean up - delete the test document
+          return mcpsRef.doc(docRef.id).delete();
+        })
+        .then(() => {
+          logResult('Successfully deleted test MCP document', true);
+        })
+        .catch((error) => {
+          logResult(`Firestore error: ${error.message}`, false);
+        });
+    });
+
+    // Test MCPs logs subcollection
+    document.getElementById('testMcpsLogsCollection').addEventListener('click', function() {
+      if (!currentUser) {
+        logResult('Please sign in first', false);
+        return;
+      }
+
+      const db = firebase.firestore();
+      const mcpsRef = db.collection('mcps');
+      
+      // First create a test MCP
+      mcpsRef.add({
+        userId: currentUser.uid,
+        title: 'Test MCP for Logs',
+        fileName: 'test-logs.txt',
+        status: 'processing',
+        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+        updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+      })
+      .then((mcpDocRef) => {
+        // Now test adding a log to the logs subcollection
+        const logsRef = mcpDocRef.collection('logs');
+        return logsRef.add({
+          message: 'Test log entry',
+          timestamp: firebase.firestore.FieldValue.serverTimestamp(),
+          level: 'info'
+        }).then(() => {
+          return { mcpDocRef, logsRef };
+        });
+      })
+      .then(({ mcpDocRef, logsRef }) => {
+        logResult('Successfully added log to logs subcollection', true);
+        
+        // Test reading logs
+        return logsRef.get().then((snapshot) => {
+          logResult(`Successfully read logs subcollection. Found ${snapshot.size} documents.`, true);
+          return mcpDocRef;
+        });
+      })
+      .then((mcpDocRef) => {
+        // Clean up - delete the test MCP document (which will also delete its logs)
+        return mcpDocRef.delete();
+      })
+      .then(() => {
+        logResult('Successfully deleted test MCP document with logs', true);
+      })
+      .catch((error) => {
+        logResult(`Firestore error: ${error.message}`, false);
+      });
+    });
+
+    // Helper function to log results
+    function logResult(message, isSuccess) {
+      const resultsDiv = document.getElementById('testResults');
+      const className = isSuccess ? 'success' : 'error';
+      const timestamp = new Date().toLocaleTimeString();
+      
+      resultsDiv.innerHTML += `<p class="${className}">[${timestamp}] ${message}</p>`;
+    }
+  </script>
+</body>
+</html>

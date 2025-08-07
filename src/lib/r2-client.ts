@@ -2,7 +2,7 @@ import { S3Client, PutObjectCommand, DeleteObjectCommand, GetObjectCommand } fro
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
 // Initialize R2 client
-const r2Client = new S3Client({
+export const r2Client = new S3Client({
   region: 'auto',
   endpoint: `https://${process.env.CF_ACCOUNT_ID}.r2.cloudflarestorage.com`,
   credentials: {
@@ -55,8 +55,55 @@ export async function deleteFile(key: string): Promise<void> {
  */
 export function generateFileKey(userId: string, fileId: string, originalName: string): string {
   const timestamp = Date.now();
-  const extension = originalName.split('.').pop();
-  return `users/${userId}/files/${fileId}/${timestamp}.${extension}`;
+  const sanitizedName = originalName.replace(/[^a-zA-Z0-9.-]/g, '_');
+  return `uploads/${userId}/${fileId}/${timestamp}_${sanitizedName}`;
+}
+
+/**
+ * Generate MCP-specific file key for private storage
+ * Format: mcp_uploads/{user_id}/{mcp_id}/input.{ext}
+ */
+export function generateMCPFileKey(userId: string, mcpId: string, fileName: string): string {
+  const fileExtension = fileName.split('.').pop() || 'pdf';
+  return `mcp_uploads/${userId}/${mcpId}/input.${fileExtension}`;
+}
+
+/**
+ * Generate presigned URL for MCP file upload with private access
+ */
+export async function generateMCPUploadUrl(userId: string, mcpId: string, fileName: string, contentType: string): Promise<{ uploadUrl: string; r2Key: string }> {
+  const r2Key = generateMCPFileKey(userId, mcpId, fileName);
+  
+  const command = new PutObjectCommand({
+    Bucket: BUCKET_NAME,
+    Key: r2Key,
+    ContentType: contentType,
+    // Ensure private access - no public read
+    ACL: 'private',
+    Metadata: {
+      'user-id': userId,
+      'mcp-id': mcpId,
+      'upload-type': 'mcp-input',
+      'created-at': new Date().toISOString()
+    }
+  });
+
+  const uploadUrl = await getSignedUrl(r2Client, command, { expiresIn: 3600 }); // 1 hour
+  
+  return { uploadUrl, r2Key };
+}
+
+/**
+ * Generate presigned URL for private MCP file download (internal use only)
+ */
+export async function generateMCPDownloadUrl(r2Key: string): Promise<string> {
+  const command = new GetObjectCommand({
+    Bucket: BUCKET_NAME,
+    Key: r2Key,
+  });
+
+  // Short expiration for internal use only
+  return await getSignedUrl(r2Client, command, { expiresIn: 300 }); // 5 minutes
 }
 
 /**

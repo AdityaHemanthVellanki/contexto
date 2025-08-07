@@ -154,7 +154,12 @@ export async function POST(request: NextRequest) {
   try {
     // Apply rate limiting - 5 requests per 10 seconds per user/IP
     // More restrictive for uploads as they're resource-intensive
-    const rateLimitResult = await rateLimit(request, {
+    // Extract IP address or forwarded IP as identifier for rate limiting
+    const identifier = request.headers.get('x-forwarded-for') || 
+                      request.headers.get('x-real-ip') || 
+                      'unknown-ip';
+    
+    const rateLimitResult = await rateLimit(identifier, {
       limit: 5,
       windowSizeInSeconds: 10
     });
