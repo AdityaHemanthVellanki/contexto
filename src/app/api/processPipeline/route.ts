@@ -1,24 +1,19 @@
-import { NextRequest } from 'next/server';
-import { withAuth, errorResponse, successResponse } from '@/lib/api-middleware';
-import { generateEmbeddings } from '@/lib/azure-openai';
-import { upsertEmbeddings } from '@/lib/pinecone-client';
-import { generateDownloadUrl } from '@/lib/r2-client';
-import { processFileToChunks, processDescriptionToChunks } from '@/lib/text-processor';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
-import { db } from '@/lib/firebase';
+import { NextRequest, NextResponse } from 'next/server';
+import { errorResponse, successResponse } from '../../../lib/api-middleware';
+import { generateEmbeddings } from '../../../lib/azure-openai';
+import { upsertEmbeddings } from '../../../lib/pinecone-client';
+import { r2Client, generateDownloadUrl } from '../../../lib/r2-client';
+import { processFileToChunks } from '../../../lib/text-processor';
+// Admin Firestore is used instead of client SDK
 import { v4 as uuidv4 } from 'uuid';
 import { z } from 'zod';
-<<<<<<< HEAD
-// Use only our shared Firebase Admin initialization module
-import { initializeFirebaseAdmin } from '@/lib/firebase-admin-init';
+import { initializeFirebaseAdmin } from '../../../lib/firebase-admin-init';
 import { FieldValue } from 'firebase-admin/firestore';
-import { rateLimit } from '@/lib/rate-limiter-memory';
-import { authenticateRequest } from '@/lib/api-auth';
-import { createEmbeddings } from '@/lib/embeddings';
-import { generateChatResponse } from '@/services/azure-openai-server';
-import { r2Client, R2_BUCKET, GetObjectCommand } from '@/lib/r2';
-import { processFile } from '@/lib/fileProcessor';
-import { exportMCPPipeline } from '@/lib/mcpExporter';
+import { createEmbeddings } from '../../../lib/embeddings';
+import { GetObjectCommand } from '@aws-sdk/client-s3';
+import { processFile } from '../../../lib/fileProcessor';
+import { exportMCPPipeline } from '../../../lib/mcpExporter';
+import { authenticateRequest } from '../../../lib/api-auth';
 
 // Initialize Firebase Admin SDK at module load time
 // This ensures Firebase is ready before any requests are processed
@@ -32,8 +27,9 @@ try {
     error instanceof Error ? error.message : String(error));
   // The error will be handled when the API route is called
 }
-=======
->>>>>>> db67cbcf19fab530d2b300d56dd527b2d7d1df52
+
+// R2 bucket name from environment variables
+const R2_BUCKET = process.env.CF_R2_BUCKET_NAME || '';
 
 // Tool interface
 interface Tool {
@@ -62,120 +58,83 @@ const ProcessPipelineSchema = z.object({
     }))
   })).optional().default([]),
   autoGenerateTools: z.boolean().optional().default(false),
-  name: z.string().min(1).max(200).optional().default('MCP Pipeline')
+  name: z.string().optional().default('')
 });
 
-interface ProcessPipelineRequest {
+type ProcessPipelineRequest = {
   fileIds?: string[];
   description: string;
   tools?: Tool[];
   autoGenerateTools?: boolean;
   name?: string;
-}
+};
 
 /**
  * Download file from R2 storage
+ * @param r2Key The R2 key for the file to download
+ * @returns Buffer containing the file data
  */
 async function downloadFileFromR2(r2Key: string): Promise<Buffer> {
   try {
-    const downloadUrl = await generateDownloadUrl(r2Key);
-    const response = await fetch(downloadUrl);
+    const getObjectCommand = new GetObjectCommand({
+      Bucket: R2_BUCKET,
+      Key: r2Key
+    });
     
-    if (!response.ok) {
-      throw new Error(`Failed to download file: ${response.statusText}`);
+    if (!r2Client) {
+      throw new Error('R2 client not initialized');
     }
     
-    const arrayBuffer = await response.arrayBuffer();
-    return Buffer.from(arrayBuffer);
+    const response = await r2Client.send(getObjectCommand);
+    const chunks: Uint8Array[] = [];
+    
+    if (response.Body) {
+      const stream = response.Body as any;
+      for await (const chunk of stream) {
+        chunks.push(chunk);
+      }
+      return Buffer.concat(chunks);
+    } else {
+      throw new Error('Empty response body from R2');
+    }
   } catch (error) {
-    console.error('File download error:', error);
+    console.error('R2 download error:', error);
     throw new Error('Failed to download file from storage');
   }
 }
 
 /**
- * POST /api/processPipeline - Process uploaded file through RAG pipeline
+ * Process text description into chunks for embedding
+ * @param description The text description to process
+ * @returns Array of text chunks
  */
-export const POST = withAuth(async (req) => {
+async function processDescriptionToChunks(description: string): Promise<Array<{
+  id: string;
+  text: string;
+  metadata: {
+    fileId: string;
+    fileName: string;
+    chunkIndex: number;
+    totalChunks: number;
+  };
+}>> {
   try {
-    const body: ProcessPipelineRequest = await req.json();
-    const validation = ProcessPipelineSchema.safeParse(body);
-    
-    if (!validation.success) {
-      return errorResponse('Invalid request data: ' + validation.error.message);
-    }
-    
-    const { fileIds = [], description, tools = [], autoGenerateTools = false, name = 'MCP Pipeline' } = validation.data;
-    
-    // Validate that either files are provided or description is sufficient
-    if (fileIds.length === 0 && description.trim().length < 10) {
-      return errorResponse('Either upload files or provide a detailed description (at least 10 characters)');
-    }
-    
-    // Get file metadata from Firestore for all files
-    const fileDataList = [];
-    for (const fileId of fileIds) {
-      const fileDocRef = doc(db, 'users', req.userId, 'files', fileId);
-      const fileDoc = await getDoc(fileDocRef);
-      
-      if (!fileDoc.exists()) {
-        return errorResponse(`File not found: ${fileId}`, 404);
-      }
-      
-      const fileData = fileDoc.data();
-      fileDataList.push({
-        id: fileId,
-        name: fileData.name,
-        mimeType: fileData.mimeType,
-        r2Key: fileData.r2Key,
-        size: fileData.size
-      });
-    }
-    
-    // Generate unique pipeline ID
-    const pipelineId = uuidv4();
-    
-    // Create pipeline record
-    const pipelineData = {
-      id: pipelineId,
-      name,
-      fileIds,
-      fileNames: fileDataList.map(f => f.name),
-      description,
-      tools,
-      autoGenerateTools,
-      status: 'processing',
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      userId: req.userId,
-      progress: {
-        downloading: false,
-        extracting: false,
-        chunking: false,
-        embedding: false,
-        indexing: false,
-        completed: false
-      },
-      stage: 'downloading',
-      progressPercent: 0
-    };
-    
-    const pipelineDocRef = doc(db, 'users', req.userId, 'pipelines', pipelineId);
-    await setDoc(pipelineDocRef, pipelineData);
-    
-    // Start processing pipeline asynchronously
-    processPipelineAsync(req.userId, pipelineId, fileDataList, description, tools, autoGenerateTools);
-    
-    return successResponse({
-      pipelineId,
-      status: 'processing',
-      message: 'Pipeline processing started'
-    });
+    // Convert description string to Buffer
+    const buffer = Buffer.from(description, 'utf-8');
+    // Process the description text into chunks
+    const chunks = await processFileToChunks(
+      buffer,
+      'text/plain',
+      'description.txt',
+      'description-' + uuidv4()
+    );
+    console.log(`Processed description into ${chunks.length} chunks`);
+    return chunks;
   } catch (error) {
-    console.error('Pipeline processing error:', error);
-    return errorResponse('Failed to start pipeline processing', 500);
+    console.error('Error processing description to chunks:', error);
+    throw new Error('Failed to process description text');
   }
-});
+}
 
 /**
  * Async pipeline processing function
@@ -193,463 +152,349 @@ async function processPipelineAsync(
   description: string,
   tools: Tool[],
   autoGenerateTools: boolean
-) {
-  const pipelineDocRef = doc(db, 'users', userId, 'pipelines', pipelineId);
-  
+): Promise<string> {
   try {
-    // Update progress: downloading
-    await setDoc(pipelineDocRef, {
-      stage: 'downloading',
-      progressPercent: 10,
-      progress: { downloading: true, extracting: false, chunking: false, embedding: false, indexing: false, completed: false },
-      updatedAt: new Date()
-    }, { merge: true });
+    console.log(`Starting pipeline processing for pipeline ${pipelineId}`);
+    console.log(`User: ${userId}, Files: ${fileDataList.length}, Description length: ${description.length}`);
     
-    // Process all files or use description-based content
-    let allChunks: any[] = [];
+    // Get Firestore reference
+    const adminDb = initializeFirebaseAdmin();
+    const pipelineRef = adminDb.collection('pipelines').doc(pipelineId);
     
-    if (fileDataList.length > 0) {
-      // Download and process each file
-      for (let i = 0; i < fileDataList.length; i++) {
-        const fileData = fileDataList[i];
-        const progressPercent = 10 + (i / fileDataList.length) * 30; // 10-40%
-        
-        await setDoc(pipelineDocRef, {
-          stage: 'downloading',
-          progressPercent,
-          updatedAt: new Date()
-        }, { merge: true });
-        
-        // Download file from R2
-        const fileBuffer = await downloadFileFromR2(fileData.r2Key);
-        
-        // Update progress: extracting
-        await setDoc(pipelineDocRef, {
-          stage: 'extracting',
-          progressPercent: progressPercent + 5,
-          progress: { downloading: true, extracting: true, chunking: false, embedding: false, indexing: false, completed: false },
-          updatedAt: new Date()
-        }, { merge: true });
-        
-        // Process file into chunks
-        const fileChunks = await processFileToChunks(fileBuffer, fileData.mimeType, fileData.name, fileData.id);
-        allChunks.push(...fileChunks);
-      }
-    } else {
-      // Create chunks from description only
-      const descriptionChunks = await processDescriptionToChunks(description, pipelineId);
+    // Update status to processing
+    await pipelineRef.update({
+      status: 'processing',
+      updatedAt: FieldValue.serverTimestamp()
+    });
+    
+    // Process all files
+    const allChunks: Array<{
+      id: string;
+      text: string;
+      metadata: {
+        fileId: string;
+        fileName: string;
+        chunkIndex: number;
+        totalChunks: number;
+      };
+    }> = [];
+    
+    // Process description if provided
+    if (description && description.trim() !== '') {
+      console.log('Processing description text...');
+      const descriptionChunks = await processDescriptionToChunks(description);
       allChunks.push(...descriptionChunks);
-    }
-    
-    // Update progress: chunking complete
-    await setDoc(pipelineDocRef, {
-      stage: 'chunking',
-      progressPercent: 50,
-      progress: { downloading: true, extracting: true, chunking: true, embedding: false, indexing: false, completed: false },
-      updatedAt: new Date(),
-      chunksCount: allChunks.length
-    }, { merge: true });
-    
-    // Update progress: embedding
-    await setDoc(pipelineDocRef, {
-      stage: 'embedding',
-      progressPercent: 60,
-      progress: { downloading: true, extracting: true, chunking: true, embedding: true, indexing: false, completed: false },
-      updatedAt: new Date()
-    }, { merge: true });
-    
-    // Generate embeddings for each chunk
-    const vectors = [];
-    for (let i = 0; i < allChunks.length; i++) {
-      const chunk = allChunks[i];
-      const progressPercent = 60 + (i / allChunks.length) * 20; // 60-80%
       
-      await setDoc(pipelineDocRef, {
-        stage: 'embedding',
-        progressPercent,
-        updatedAt: new Date()
-      }, { merge: true });
-      
-      const embedding = await generateEmbeddings(chunk.text);
-      
-      vectors.push({
-        id: chunk.id,
-        values: embedding,
-        metadata: {
-          ...chunk.metadata,
-          text: chunk.text,
-          description,
-          tools: JSON.stringify(tools),
-          autoGenerateTools
-        }
+      await pipelineRef.update({
+        descriptionChunksCount: descriptionChunks.length,
+        updatedAt: FieldValue.serverTimestamp()
       });
     }
     
-    // Update progress: indexing
-    await setDoc(pipelineDocRef, {
-      stage: 'indexing',
-      progressPercent: 85,
-      progress: { downloading: true, extracting: true, chunking: true, embedding: true, indexing: true, completed: false },
-      updatedAt: new Date()
-    }, { merge: true });
+    // Process each file
+    for (const fileData of fileDataList) {
+      console.log(`Processing file: ${fileData.name} (${fileData.mimeType})`);
+      
+      // Update status to show which file is being processed
+      await pipelineRef.update({
+        currentFile: fileData.name,
+        updatedAt: FieldValue.serverTimestamp()
+      });
+      
+      // Download file from R2
+      console.log(`Downloading file from R2: ${fileData.r2Key}`);
+      const fileBuffer = await downloadFileFromR2(fileData.r2Key);
+      
+      // Extract text content
+      console.log(`Extracting text from file: ${fileData.name}`);
+      const extractedText = await processFile(fileBuffer, fileData.mimeType, fileData.name);
+      
+      if (!extractedText || extractedText.trim() === '') {
+        console.warn(`No text content extracted from file: ${fileData.name}`);
+        continue;
+      }
+      
+      console.log(`Successfully extracted ${extractedText.length} characters from ${fileData.name}`);
+      
+      // Process text into chunks
+      const textBuffer = Buffer.from(extractedText, 'utf-8');
+      const fileChunks = await processFileToChunks(
+        textBuffer,
+        fileData.mimeType,
+        fileData.name,
+        fileData.id
+      );
+      console.log(`Processed ${fileData.name} into ${fileChunks.length} chunks`);
+      
+      // Add chunks to the collection
+      allChunks.push(...fileChunks);
+      
+      // Update progress in Firestore
+      await pipelineRef.update({
+        [`fileChunks.${fileData.id}`]: fileChunks.length,
+        updatedAt: FieldValue.serverTimestamp()
+      });
+    }
     
-    // Upsert to Pinecone
-    // Create index name from userId and pipelineId
-    const indexName = `ctx-${userId.toLowerCase()}-${pipelineId.toLowerCase()}`.replace(/[^a-z0-9-]/g, '-');
-    await upsertEmbeddings(indexName, vectors);
+    // Generate embeddings for all chunks
+    console.log(`Generating embeddings for ${allChunks.length} chunks`);
+    await pipelineRef.update({
+      status: 'embedding',
+      chunksCount: allChunks.length,
+      updatedAt: FieldValue.serverTimestamp()
+    });
     
-    // Update progress: completed
-    await setDoc(pipelineDocRef, {
-      status: 'completed',
-      stage: 'complete',
-      progressPercent: 100,
-      progress: { downloading: true, extracting: true, chunking: true, embedding: true, indexing: true, completed: true },
-      updatedAt: new Date(),
-      vectorsCount: vectors.length,
+    // Extract text from chunks for embedding
+    const chunkTexts = allChunks.map(chunk => chunk.text);
+    const embeddings = await createEmbeddings(chunkTexts, pipelineId);
+    console.log(`Generated ${embeddings.length} embeddings`);
+    
+    // Store embeddings in vector database
+    console.log('Storing embeddings in vector database...');
+    await pipelineRef.update({
+      status: 'indexing',
+      updatedAt: FieldValue.serverTimestamp()
+    });
+    
+    // Create index name from user ID and pipeline ID
+    const indexName = `user-${userId}-pipeline-${pipelineId}`;
+    
+    // Convert chunks and embeddings to the format expected by upsertEmbeddings
+    // createEmbeddings returns array of {embedding: number[]} objects
+    const records = allChunks.map((chunk, i) => ({
+      id: `chunk-${i}`,
+      values: embeddings[i].embedding, // Extract the actual number[] from the embedding object
+      metadata: {
+        text: chunk.text,
+        fileId: chunk.metadata.fileId,
+        fileName: chunk.metadata.fileName,
+        pipelineId: pipelineId
+      }
+    }));
+    
+    await upsertEmbeddings(indexName, records);
+    
+    // Generate tools if requested
+    if (autoGenerateTools) {
+      console.log('Auto-generating tools based on content...');
+      // This would be implemented in a real system
+      // For now, we'll just update the status
+      await pipelineRef.update({
+        status: 'generating_tools',
+        updatedAt: FieldValue.serverTimestamp()
+      });
+      
+      // In a real implementation, we would generate tools here
+      // and update the tools array in the pipeline document
+    }
+    
+    // Export MCP pipeline if needed
+    if (tools && tools.length > 0) {
+      console.log('Exporting MCP pipeline...');
+      await pipelineRef.update({
+        status: 'exporting',
+        updatedAt: FieldValue.serverTimestamp()
+      });
+      
+      // Create a pipeline object that matches the expected Pipeline type
+      const pipelineData = {
+        id: pipelineId,
+        metadata: {
+          author: userId,
+          createdAt: new Date().toISOString(),
+          fileName: fileDataList.length > 0 ? fileDataList[0].name : 'description',
+          fileType: fileDataList.length > 0 ? fileDataList[0].mimeType : 'text/plain',
+          purpose: description.substring(0, 100),
+          vectorStore: 'pinecone',
+          chunksCount: allChunks.length,
+          chunkSize: 500,
+          overlap: 50
+        },
+        nodes: [
+          {
+            id: 'datasource',
+            type: 'DataSource',
+            data: {
+              fileName: fileDataList.length > 0 ? fileDataList[0].name : 'description',
+              fileType: fileDataList.length > 0 ? fileDataList[0].mimeType : 'text/plain',
+              fileSize: fileDataList.length > 0 ? fileDataList[0].size : description.length
+            }
+          },
+          {
+            id: 'chunker',
+            type: 'Chunker',
+            data: {
+              chunkSize: 500,
+              overlap: 50,
+              chunksCount: allChunks.length
+            }
+          },
+          {
+            id: 'embedder',
+            type: 'Embedder',
+            data: {
+              model: 'text-embedding-ada-002',
+              dimensions: embeddings[0]?.embedding.length || 1536
+            }
+          },
+          {
+            id: 'indexer',
+            type: 'Indexer',
+            data: {
+              vectorStore: 'pinecone',
+              indexedCount: allChunks.length
+            }
+          }
+        ],
+        edges: [
+          { id: 'e1', source: 'datasource', target: 'chunker' },
+          { id: 'e2', source: 'chunker', target: 'embedder' },
+          { id: 'e3', source: 'embedder', target: 'indexer' }
+        ]
+      };
+      
+      // Export the pipeline
+      const downloadUrl = await exportMCPPipeline(pipelineData, userId);
+      
+      // Update with export information
+      await pipelineRef.update({
+        exportUrl: downloadUrl,
+        exportedAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp()
+      });
+    }
+    
+    // Update pipeline with completion status
+    await pipelineRef.update({
+      status: 'complete',
+      completedAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
       indexName
-    }, { merge: true });
+    });
     
-    console.log(`Pipeline ${pipelineId} completed successfully`);
+    console.log(`Pipeline ${pipelineId} processing complete`);
+    return `Pipeline processing complete. Processed ${allChunks.length} chunks.`;
   } catch (error) {
-<<<<<<< HEAD
-    console.error('Error generating pipeline response:', error);
-    // Fallback to a basic response without AI generation if something goes wrong
-    return `Pipeline processing complete for ${pipelineInfo.fileName}. Created ${pipelineInfo.chunksCount} chunks and indexed them in ${pipelineInfo.vectorStore}.`;
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    console.error(`Pipeline processing error: ${errorMessage}`);
+    throw error;
   }
 }
 
+/**
+ * POST /api/processPipeline - Process uploaded file through RAG pipeline
+ */
 export async function POST(request: NextRequest) {
   try {
-    // Apply rate limiting - 2 requests per minute for pipeline processing
-    const rateLimitResult = await rateLimit(request, {
-      limit: 2,
-      windowSizeInSeconds: 60
-    });
-
-    if (rateLimitResult.limited) {
-      return NextResponse.json(
-        { error: 'Too many requests. Please wait before processing another pipeline.' },
-        { status: 429, headers: rateLimitResult.headers }
-      );
-    }
-
-    // Authenticate request
+    // Authenticate the request
     const authResult = await authenticateRequest(request);
-    if (!authResult.authenticated) {
-      return authResult.response || NextResponse.json({ error: 'Authentication failed' }, { status: 401 });
+    if (!authResult.authenticated || !authResult.userId) {
+      return errorResponse('Authentication failed', 401);
     }
-
-    const userId = authResult.userId!;
+    
+    const userId = authResult.userId;
+    
+    // Initialize Firestore using our shared module
+    const adminDb = initializeFirebaseAdmin();
 
     // Parse and validate request body
-    const body = await request.json();
-    const validationResult = ProcessPipelineSchema.safeParse(body);
+    const requestBody = await request.json();
     
+    // Validate request using Zod schema
+    const validationResult = ProcessPipelineSchema.safeParse(requestBody);
     if (!validationResult.success) {
-      return NextResponse.json({
-        error: 'Invalid request data',
-        details: validationResult.error.issues
-      }, { status: 400 });
+      return errorResponse('Invalid request data: ' + validationResult.error.message, 400);
     }
-
-    const { fileId, purpose } = validationResult.data;
-
-    // Initialize Firestore using our shared module
-    // This ensures Firebase Admin is properly initialized
-    const db = initializeFirebaseAdmin();
-
-    // 1. Verify file ownership and get file metadata
-    const uploadDoc = await db.collection('uploads').doc(fileId).get();
-    if (!uploadDoc.exists) {
-      return NextResponse.json({ error: 'File not found' }, { status: 404 });
-    }
-
-    const uploadData = uploadDoc.data()!;
-    if (uploadData.userId !== userId) {
-      return NextResponse.json({ error: 'Unauthorized access to file' }, { status: 403 });
-    }
-
-    // 2. Download file from R2
-    console.log(`Downloading file from R2: ${uploadData.r2Key}`);
-    let fileBuffer: Buffer;
     
-    try {
-      const getObjectCommand = new GetObjectCommand({
-        Bucket: R2_BUCKET,
-        Key: uploadData.r2Key
-      });
-      
-      if (!r2Client) {
-        throw new Error('R2 client not initialized');
-      }
-      const response = await r2Client.send(getObjectCommand);
-      const chunks: Uint8Array[] = [];
-      
-      if (response.Body) {
-        const stream = response.Body as any;
-        for await (const chunk of stream) {
-          chunks.push(chunk);
-        }
-        fileBuffer = Buffer.concat(chunks);
-      } else {
-        throw new Error('Empty response body from R2');
-      }
-    } catch (error) {
-      console.error('R2 download error:', error);
-      return NextResponse.json({
-        error: 'Failed to download file from storage'
-      }, { status: 500 });
-    }
-
-    // 3. Extract text content with enhanced type detection and error handling
-    console.log(`Processing file: ${uploadData.fileName} (${uploadData.fileType})`);
-    let extractedText: string;
+    const { fileIds, description, tools: rawTools = [], autoGenerateTools = false, name = '' } = validationResult.data;
     
-    try {
-      // Ensure we have a valid MIME type or detect it from file extension
-      let mimeType = uploadData.fileType;
-      
-      if (!mimeType || mimeType === 'application/octet-stream' || mimeType === '') {
-        // Extract file extension from filename
-        const fileExtension = uploadData.fileName.split('.').pop()?.toLowerCase();
-        console.log(`Missing or generic MIME type. Detecting from extension: ${fileExtension}`);
-        
-        // Map common file extensions to MIME types
-        const mimeMap: Record<string, string> = {
-          'pdf': 'application/pdf',
-          'doc': 'application/msword',
-          'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-          'txt': 'text/plain',
-          'csv': 'text/csv',
-          'jpg': 'image/jpeg',
-          'jpeg': 'image/jpeg',
-          'png': 'image/png',
-          'gif': 'image/gif',
-          'mp3': 'audio/mpeg',
-          'mp4': 'video/mp4',
-          'json': 'application/json',
-          'html': 'text/html'
-        };
-        
-        if (fileExtension && mimeMap[fileExtension]) {
-          mimeType = mimeMap[fileExtension];
-          console.log(`Detected MIME type from extension: ${mimeType}`);
-        }
-      }
-      
-      // Import the file processor for proper content extraction
-      const { processFile } = await import('@/lib/fileProcessor');
-      
-      // Process the file using our comprehensive file processor with properly detected mime type
-      console.log(`Processing with MIME type: ${mimeType}, File: ${uploadData.fileName}, Size: ${fileBuffer.length} bytes`);
-      extractedText = await processFile(fileBuffer, mimeType, uploadData.fileName);
-      
-      if (!extractedText || extractedText.trim() === '') {
-        console.warn('No text content extracted from file, returning empty string');
-        extractedText = ''; // Use empty string instead of throwing error to allow partial processing
-      } else {
-        console.log(`Successfully extracted ${extractedText.length} characters of text`);
-      }
-    } catch (error) {
-      console.error('File processing error:', error);
-      return NextResponse.json({
-        error: `Failed to extract content from file: ${error instanceof Error ? error.message : 'Unknown error'}`
-      }, { status: 422 });
-    }
-
-    // 4. Intelligent chunking based on content size
-    const textLength = extractedText.length;
-    const chunkSize = textLength > 10000 ? 1000 : textLength > 5000 ? 750 : 500;
-    const overlap = Math.floor(chunkSize * 0.1); // 10% overlap
-
-    const chunks: string[] = [];
-    for (let i = 0; i < extractedText.length; i += chunkSize - overlap) {
-      const chunk = extractedText.slice(i, i + chunkSize);
-      if (chunk.trim()) {
-        chunks.push(chunk.trim());
-      }
-    }
-
-    console.log(`Created ${chunks.length} chunks with size ${chunkSize} and overlap ${overlap}`);
-
-    // 5. Generate embeddings (simplified - using existing function)
-    let embeddings: Array<{ embedding: number[] }> = [];
-    try {
-      embeddings = await createEmbeddings(chunks);
-      console.log(`Generated ${embeddings.length} embeddings`);
-      
-      // Verify that we got valid embeddings
-      if (!embeddings || embeddings.length === 0) {
-        throw new Error('No valid embeddings were generated');
-      }
-    } catch (error) {
-      console.error('Embeddings generation error:', error);
-      return NextResponse.json({
-        error: `Failed to generate embeddings: ${error instanceof Error ? error.message : 'Unknown error'}`
-      }, { status: 500 });
-    }
-
-    // 6. Create pipeline JSON structure
-    const pipelineId = `${userId}_${Date.now()}`;
-    const pipeline = {
+    // Ensure tools array matches the Tool interface
+    const tools: Tool[] = rawTools.map(tool => ({
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.parameters.map(param => ({
+        name: param.name,
+        type: param.type,
+        description: param.description,
+        required: param.required
+      }))
+    }));
+    
+    // Create a unique pipeline ID
+    const pipelineId = uuidv4();
+    
+    // Create a document in Firestore to track pipeline progress
+    const pipelineRef = adminDb.collection('pipelines').doc(pipelineId);
+    await pipelineRef.set({
       id: pipelineId,
-      metadata: {
-        author: userId,
-        createdAt: new Date().toISOString(),
-        fileName: uploadData.fileName,
-        fileType: uploadData.fileType,
-        purpose,
-        vectorStore: 'firestore',
-        chunksCount: chunks.length,
-        chunkSize,
-        overlap
-      },
-      nodes: [
-        {
-          id: 'datasource',
-          type: 'DataSource',
-          data: {
-            fileName: uploadData.fileName,
-            fileType: uploadData.fileType,
-            fileSize: uploadData.fileSize
-          }
-        },
-        {
-          id: 'chunker',
-          type: 'Chunker',
-          data: {
-            chunkSize,
-            overlap,
-            chunksCount: chunks.length
-          }
-        },
-        {
-          id: 'embedder',
-          type: 'Embedder',
-          data: {
-            model: 'text-embedding-ada-002',
-            dimensions: embeddings[0]?.embedding?.length || 1536
-          }
-        },
-        {
-          id: 'indexer',
-          type: 'Indexer',
-          data: {
-            vectorStore: 'firestore',
-            indexedCount: chunks.length
-          }
-        },
-        {
-          id: 'retriever',
-          type: 'Retriever',
-          data: {
-            topK: 5,
-            similarityThreshold: 0.7
-          }
-        },
-        {
-          id: 'rag',
-          type: 'RAG',
-          data: {
-            model: process.env.OPENAI_DEPLOYMENT || 'gpt-4',
-            // Generate a real response using Azure OpenAI
-            response: await generatePipelineResponse({
-              fileName: uploadData.fileName,
-              fileType: uploadData.fileType,
-              purpose: purpose,
-              chunksCount: chunks.length,
-              chunkSize: chunkSize,
-              vectorStore: 'firestore',
-              indexedCount: chunks.length
-            })
-          }
-        }
-      ],
-      edges: [
-        { id: 'e1', source: 'datasource', target: 'chunker' },
-        { id: 'e2', source: 'chunker', target: 'embedder' },
-        { id: 'e3', source: 'embedder', target: 'indexer' },
-        { id: 'e4', source: 'indexer', target: 'retriever' },
-        { id: 'e5', source: 'retriever', target: 'rag' }
-      ]
-    };
-
-    // 7. Save pipeline to Firestore
-    try {
-      // Use our shared Firebase Admin initialization module
-      const db = initializeFirebaseAdmin();
-      await db.collection('pipelines').doc(pipelineId).set({
-        ...pipeline,
-        userId,
-        createdAt: new Date(),
-        updatedAt: new Date()
-      });
-    } catch (error) {
-      console.error('Pipeline save error:', error);
-      return NextResponse.json({
-        error: 'Failed to save pipeline'
-      }, { status: 500 });
-    }
-
-    // 8. Generate and export MCP pipeline as complete ZIP package
-    console.log(`Generating MCP export for pipeline ${pipelineId}`);
-    let downloadUrl: string;
+      userId,
+      fileIds,
+      description,
+      tools,
+      autoGenerateTools,
+      name,
+      status: 'processing',
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
     
-    try {
-      // Use our robust mcpExporter to create a complete package with all files
-      downloadUrl = await exportMCPPipeline(pipeline, userId);
-    } catch (error) {
-      console.error('MCP export error:', error);
-      return NextResponse.json({
-        error: 'Failed to create MCP export',
-        details: error instanceof Error ? error.message : 'Unknown export error'
-      }, { status: 500 });
-    }
-
-    // 10. Log usage metrics
-    try {
-      // Use our shared Firebase Admin initialization module for metrics logging
-      const metricsDb = initializeFirebaseAdmin();
-      await metricsDb.collection('usage').add({
-        userId,
-        action: 'pipeline_processed',
-        fileId,
-        pipelineId,
-        fileName: uploadData.fileName,
-        fileSize: uploadData.fileSize,
-        chunksCount: chunks.length,
-        vectorStore: 'firestore',
-        timestamp: new Date()
+    // Fetch file metadata for all files
+    const fileDataList = [];
+    for (const fileId of fileIds) {
+      const uploadDoc = await adminDb.collection('uploads').doc(fileId).get();
+      
+      if (!uploadDoc.exists) {
+        return errorResponse(`File not found: ${fileId}`, 404);
+      }
+      
+      const uploadData = uploadDoc.data();
+      if (!uploadData || uploadData.userId !== userId) {
+        return errorResponse('Unauthorized access to file', 403);
+      }
+      
+      fileDataList.push({
+        id: fileId,
+        name: uploadData.fileName || uploadData.name,
+        mimeType: uploadData.fileType || uploadData.mimeType,
+        r2Key: uploadData.r2Key,
+        size: uploadData.fileSize || uploadData.size || 0
       });
-    } catch (error) {
-      console.error('Usage logging error:', error);
-      // Don't fail the request for logging errors
     }
 
-    // Return success response
-    return NextResponse.json({
-      downloadUrl,
+    // Start async processing
+    // Start async processing
+    processPipelineAsync(
+      userId,
       pipelineId,
-      message: 'Pipeline processed successfully'
-    }, { 
-      status: 200,
-      headers: rateLimitResult.headers 
+      fileDataList,
+      description,
+      tools,
+      autoGenerateTools
+    ).catch((error: unknown) => {
+      console.error('Pipeline processing error:', error);
+      console.error(`Pipeline ${pipelineId} failed:`, error);
+      
+      // Update pipeline with error status
+      pipelineRef.update({
+        status: 'error',
+        error: error instanceof Error ? error.message : String(error),
+        updatedAt: FieldValue.serverTimestamp()
+      }).catch((err: unknown) => {
+        console.error('Failed to update pipeline error status:', err);
+      });
+    });
+    
+    // Return immediate response with pipeline ID
+    return successResponse({
+      pipelineId,
+      status: 'processing'
     });
 
   } catch (error) {
-    console.error('Pipeline processing error:', error);
-    return NextResponse.json({
-      error: error instanceof Error ? error.message : 'Unknown processing error'
-    }, { status: 500 });
-=======
-    console.error(`Pipeline ${pipelineId} failed:`, error);
-    
-    // Update pipeline with error status
-    await setDoc(pipelineDocRef, {
-      status: 'failed',
-      error: error instanceof Error ? error.message : 'Unknown error',
-      updatedAt: new Date()
-    }, { merge: true });
->>>>>>> db67cbcf19fab530d2b300d56dd527b2d7d1df52
+    console.error('Error in processPipeline API:', error);
+    return errorResponse(
+      error instanceof Error ? error.message : 'An unexpected error occurred',
+      500
+    );
   }
 }

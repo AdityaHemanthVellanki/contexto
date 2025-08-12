@@ -1,4 +1,5 @@
 import { VectorDocument, VectorQueryResult, VectorStore } from './vectorStoreInterface';
+import { Pinecone } from '@pinecone-database/pinecone';
 
 /**
  * Pinecone Vector Store implementation
@@ -8,7 +9,8 @@ export class PineconeVectorStore implements VectorStore {
   private indexName: string;
   private namespace: string;
   private dimensionSize: number;
-  private pineconeClient: any; // Would be properly typed in a real implementation
+  private pinecone: Pinecone;
+  private index: any; // Pinecone index instance
 
   /**
    * Create a new PineconeVectorStore
@@ -16,7 +18,6 @@ export class PineconeVectorStore implements VectorStore {
    * @param dimensionSize Dimension size of embeddings (default: 1536 for OpenAI)
    */
   constructor(private pipelineId: string, dimensionSize: number = 1536) {
-<<<<<<< HEAD
     const apiKey = process.env.PINECONE_API_KEY;
     const environment = process.env.PINECONE_ENVIRONMENT;
     const INDEX_NAME = process.env.PINECONE_INDEX_NAME;
@@ -33,18 +34,12 @@ export class PineconeVectorStore implements VectorStore {
     
     // Initialize Pinecone client
     this.pinecone = new Pinecone({
-      apiKey,
-      environment
+      apiKey
+      // Note: The latest Pinecone SDK doesn't use environment in the constructor
+      // It's now configured through the API key and endpoint URLs
     });
     
-    this.index = this.pinecone.Index(this.indexName);
-=======
-    this.indexName = process.env.PINECONE_INDEX_NAME || 'contexto';
-    this.namespace = `pipeline-${pipelineId}`;
-    this.dimensionSize = dimensionSize;
-    // In a real implementation, we would initialize the Pinecone client here
-    this.pineconeClient = null; // Placeholder
->>>>>>> parent of 4ebe2a0 (added heroku deployment for mcp)
+    this.index = this.pinecone.index(this.indexName);
   }
 
   /**

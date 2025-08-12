@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { useAuth } from '@/lib/auth-context';
+import { useAuth } from '@/context/AuthContext';
 import { db } from '@/lib/firebase';
 import { 
   collection, 
@@ -11,7 +11,8 @@ import {
   onSnapshot, 
   deleteDoc, 
   doc,
-  addDoc 
+  addDoc,
+  serverTimestamp
 } from 'firebase/firestore';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -59,7 +60,7 @@ interface MCPFormData {
 }
 
 export default function MCPDashboard() {
-  const { user, loading: authLoading } = useAuth();
+  const { user, isLoading: authLoading, signInWithGoogle } = useAuth();
   const [mcps, setMcps] = useState<MCPItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [showOnboarding, setShowOnboarding] = useState(false);
@@ -139,21 +140,33 @@ export default function MCPDashboard() {
   const handleCreateMCP = async () => {
     setIsCreating(true);
     try {
-      const mcpData = {
+      const baseData: any = {
         userId: user!.uid,
-        title: formData.name,
-        description: formData.description || undefined,
-        data: formData.data || undefined,
-        context: formData.context || undefined,
-        toolRules: formData.toolRules || undefined,
+        title: formData.name.trim(),
         autoGenerateTools: formData.autoGenerateTools,
-        fileName: uploadedFile?.name || undefined,
         status: 'processing',
-        createdAt: new Date(),
-        updatedAt: new Date()
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
       };
 
-      await addDoc(collection(db, 'mcps'), mcpData);
+      // Conditionally add optional fields only when provided
+      if (formData.description && formData.description.trim()) {
+        baseData.description = formData.description.trim();
+      }
+      if (formData.data && formData.data.trim()) {
+        baseData.data = formData.data;
+      }
+      if (formData.context && formData.context.trim()) {
+        baseData.context = formData.context.trim();
+      }
+      if (formData.toolRules && formData.toolRules.trim()) {
+        baseData.toolRules = formData.toolRules.trim();
+      }
+      if (uploadedFile && uploadedFile.name) {
+        baseData.fileName = uploadedFile.name;
+      }
+
+      await addDoc(collection(db, 'mcps'), baseData);
       
       toast.success('MCP creation started!');
       setShowOnboarding(false);
@@ -210,7 +223,10 @@ export default function MCPDashboard() {
       <div className="min-h-screen bg-black flex items-center justify-center">
         <div className="text-center">
           <h1 className="text-2xl font-bold text-white mb-4">Please sign in</h1>
-          <p className="text-gray-400">You need to be signed in to access the dashboard.</p>
+          <p className="text-gray-400 mb-6">You need to be signed in to access the dashboard.</p>
+          <Button onClick={signInWithGoogle} className="bg-white text-black hover:bg-gray-200">
+            Continue with Google
+          </Button>
         </div>
       </div>
     );

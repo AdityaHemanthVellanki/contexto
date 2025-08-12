@@ -99,7 +99,6 @@ export async function exportMCPPipeline(pipeline: Pipeline, userId: string): Pro
       Body: zipBuffer,
       ContentType: 'application/zip',
       ContentDisposition: `attachment; filename="mcp-pipeline-${validatedPipeline.id}.zip"`
-<<<<<<< HEAD
     });
     
     const result = await client.send(command);
@@ -111,14 +110,6 @@ export async function exportMCPPipeline(pipeline: Pipeline, userId: string): Pro
     // Log the generated URL (without query params for security)
     const urlObj = new URL(downloadUrl);
     console.log('mcpExporter: generated presigned URL for', `${urlObj.origin}${urlObj.pathname}`);
-=======
-    }));
-
-    // Generate download URL
-    const downloadUrl = process.env.CF_R2_ENDPOINT 
-      ? `${process.env.CF_R2_ENDPOINT}/${R2_BUCKET}/${encodeURIComponent(r2Key)}`
-      : `https://${R2_BUCKET}.r2.cloudflarestorage.com/${encodeURIComponent(r2Key)}`;
->>>>>>> parent of 4ebe2a0 (added heroku deployment for mcp)
 
     // Log export to Firestore
     await logExport(exportId, validatedPipeline.id, userId, r2Key, downloadUrl);
