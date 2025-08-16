@@ -45,8 +45,15 @@ setInterval(() => {
  * Warning: This is suitable for low-traffic applications or development.
  * For high-traffic production environments, consider a distributed solution.
  */
-export async function rateLimit(identifier: string, options: { limit: number; windowSizeInSeconds: number }): Promise<RateLimitResult> {
-  const { limit, windowSizeInSeconds } = options;
+export async function rateLimit(
+  identifier: string,
+  options: { limit: number; windowSizeInSeconds: number } = { limit: 60, windowSizeInSeconds: 60 }
+): Promise<RateLimitResult> {
+  // Validate and coerce values to safe defaults
+  const rawLimit = options?.limit;
+  const rawWindow = options?.windowSizeInSeconds;
+  const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : 60;
+  const windowSizeInSeconds = Number.isFinite(rawWindow) && rawWindow > 0 ? rawWindow : 60;
   const now = Date.now();
   const windowStart = now - (windowSizeInSeconds * 1000);
   

@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getServerSession } from 'next-auth/next';
-import { authOptions } from '@/lib/auth';
+import { verifyAuth } from '@/lib/auth';
 import { getServerEnv } from '@/lib/env';
 import { rateLimit } from '@/lib/rate-limiter-memory';
 import { getVectorStore } from '@/lib/vectorStore';
-import { getFirestore, collection, addDoc, serverTimestamp } from 'firebase-admin/firestore';
+import { FieldValue } from 'firebase-admin/firestore';
+import { initializeFirebaseAdmin } from '@/lib/firebase-admin-init';
 import OpenAI from 'openai';
 
 export async function POST(request: NextRequest) {
@@ -15,26 +15,27 @@ export async function POST(request: NextRequest) {
     }
 
     const { prompt } = await request.json();
-
-    const session = await getServerSession(authOptions);
-    if (!session?.user?.email) {
+    
+    const auth = await verifyAuth(request);
+    if (!auth.success || !auth.userId) {
       return NextResponse.json(
         { error: 'You must be signed in to perform this action' },
         { status: 401 }
       );
     }
 
-    const { success } = await rateLimit.limit(session.user.email);
-    if (!success) {
+    const identifier = `api:query:${auth.userId}`;
+    const { limited, headers } = await rateLimit(identifier, { limit: 60, windowSizeInSeconds: 60 });
+    if (limited) {
       return NextResponse.json(
         { error: 'Too many requests' },
-        { status: 429 }
+        { status: 429, headers }
       );
     }
 
     const vectorStore = await getVectorStore();
     const results = await vectorStore.similaritySearch(prompt, 5);
-    const context = results.map(r => r.pageContent).join('\n\n');
+    const context = results.map((r: any) => r.pageContent).join('\n\n');
 
     const openai = new OpenAI({
       apiKey: env.OPENAI_API_KEY,
@@ -48,12 +49,12 @@ export async function POST(request: NextRequest) {
     });
     const response = completion.choices[0].message?.content || '';
 
-    const db = getFirestore();
-    await addDoc(collection(db, 'conversations'), {
-      userId: session.user.email,
+    const adminDb = initializeFirebaseAdmin();
+    await adminDb.collection('conversations').add({
+      userId: auth.userId,
       prompt,
       response,
-      createdAt: serverTimestamp()
+      createdAt: FieldValue.serverTimestamp()
     });
 
     return NextResponse.json({ response });

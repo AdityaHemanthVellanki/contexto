@@ -3,6 +3,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { CheckCircle2, Clock, AlertCircle, Loader2, ExternalLink } from 'lucide-react';
 import { DeploymentData } from '@/types/deployment';
+import { fetchWithAuth } from '@/lib/auth-interceptor';
 
 interface DeploymentStatusProps {
   deploymentId: string;
@@ -18,7 +19,7 @@ export function DeploymentStatus({ deploymentId, onClose }: DeploymentStatusProp
 
   const fetchDeploymentStatus = async (): Promise<DeploymentData | null> => {
     try {
-      const response = await fetch(`/api/deploy/${deploymentId}`, {
+      const response = await fetchWithAuth(`/api/deploy/${deploymentId}`, {
         headers: {
           'Content-Type': 'application/json',
         },
@@ -42,6 +43,7 @@ export function DeploymentStatus({ deploymentId, onClose }: DeploymentStatusProp
 
   useEffect(() => {
     let isMounted = true;
+    let intervalId: number | undefined;
     
     const fetchData = async () => {
       try {
@@ -49,6 +51,12 @@ export function DeploymentStatus({ deploymentId, onClose }: DeploymentStatusProp
         if (isMounted) {
           if (data) {
             setDeployment(data);
+            // Stop polling if we reached a terminal state
+            if (data.status === 'success' || data.status === 'failed') {
+              if (intervalId) {
+                clearInterval(intervalId);
+              }
+            }
           } else {
             console.error('Invalid deployment data received');
           }
@@ -63,12 +71,12 @@ export function DeploymentStatus({ deploymentId, onClose }: DeploymentStatusProp
     fetchData();
     
     // Set up polling
-    const intervalId = setInterval(fetchData, 5000);
+    intervalId = window.setInterval(fetchData, 5000);
     
     // Clean up when component unmounts
     return () => {
       isMounted = false;
-      clearInterval(intervalId);
+      if (intervalId) clearInterval(intervalId);
       const highestTimeoutId = window.setTimeout(() => {}, 0);
       for (let i = 0; i < highestTimeoutId; i++) {
         window.clearTimeout(i);

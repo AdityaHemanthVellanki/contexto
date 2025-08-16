@@ -16,12 +16,32 @@ export async function middleware(request: NextRequest) {
   if (request.nextUrl.pathname.startsWith('/api/')) {
     try {
       const limiter = await getRateLimiter(request);
-      const result = await limiter(request);
-      
-      // Check if rate limited and a response is available
+      // Build a stable identifier: client IP + path
+      const ipHeader = request.headers.get('x-forwarded-for');
+      const ip =
+        (ipHeader ? ipHeader.split(',')[0]?.trim() : undefined) ||
+        // @ts-ignore - NextRequest may provide ip in some runtimes
+        (request as any).ip ||
+        'unknown';
+      const identifier = `${ip}:${request.nextUrl.pathname}`;
+      const result = await limiter(identifier, { limit: 60, windowSizeInSeconds: 60 });
+      // If limited, return 429 with rate limit headers
       if (result.limited && result.response) {
+        if (result.headers) {
+          for (const [key, value] of Object.entries(result.headers)) {
+            result.response.headers.set(key, value);
+          }
+        }
         return result.response;
       }
+      // Otherwise continue and attach rate limit headers
+      const nextRes = NextResponse.next();
+      if (result.headers) {
+        for (const [key, value] of Object.entries(result.headers)) {
+          nextRes.headers.set(key, value);
+        }
+      }
+      return nextRes;
     } catch (error) {
       console.error('Rate limiting error:', error);
       // Continue processing the request if rate limiting fails

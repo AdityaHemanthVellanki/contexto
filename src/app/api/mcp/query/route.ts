@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { withAuth, errorResponse, successResponse } from '@/lib/api-middleware';
 import { PipelineLogger } from '@/lib/utils/pipeline-logger';
-import { doc, getDoc, collection, addDoc, serverTimestamp } from 'firebase/firestore';
-import { db } from '@/lib/firebase';
+import { FieldValue } from 'firebase-admin/firestore';
+import { getFirestore } from '@/lib/firebase-admin';
 import { VectorIndexManager } from '@/lib/vector-index';
 import { OpenAIService } from '@/lib/openai-service';
 
@@ -54,14 +54,15 @@ export const POST = withAuth(async (req) => {
 
     // Step 1: Validate MCP exists and is complete
     logger.stageHeader('MCP VALIDATION');
-    const mcpRef = doc(db, 'mcps', req.userId, 'user_mcps', mcpId);
-    const mcpDoc = await getDoc(mcpRef);
+    const adminDb = await getFirestore();
+    const mcpRef = adminDb.collection('mcps').doc(req.userId).collection('user_mcps').doc(mcpId);
+    const mcpDoc = await mcpRef.get();
 
-    if (!mcpDoc.exists()) {
+    if (!mcpDoc.exists) {
       return errorResponse('MCP not found', 404);
     }
 
-    const mcpData = mcpDoc.data();
+    const mcpData = mcpDoc.data() as any;
     if (mcpData.status !== 'complete') {
       return errorResponse(`MCP is not ready for queries. Current status: ${mcpData.status}`, 400);
     }
@@ -207,11 +208,17 @@ async function logQueryToFirestore(
   }
 ): Promise<void> {
   try {
-    const queryLogsRef = collection(db, 'mcps', userId, 'user_mcps', mcpId, 'queries');
-    await addDoc(queryLogsRef, {
-      ...queryData,
-      timestamp: serverTimestamp()
-    });
+    const adminDb = await getFirestore();
+    await adminDb
+      .collection('mcps')
+      .doc(userId)
+      .collection('user_mcps')
+      .doc(mcpId)
+      .collection('queries')
+      .add({
+        ...queryData,
+        timestamp: FieldValue.serverTimestamp(),
+      });
   } catch (error) {
     console.error('Failed to log query to Firestore:', error);
   }
@@ -230,14 +237,15 @@ export const GET = withAuth(async (req) => {
     }
 
     // Validate MCP exists
-    const mcpRef = doc(db, 'mcps', req.userId, 'user_mcps', mcpId);
-    const mcpDoc = await getDoc(mcpRef);
+    const adminDb = await getFirestore();
+    const mcpRef = adminDb.collection('mcps').doc(req.userId).collection('user_mcps').doc(mcpId);
+    const mcpDoc = await mcpRef.get();
 
-    if (!mcpDoc.exists()) {
+    if (!mcpDoc.exists) {
       return errorResponse('MCP not found', 404);
     }
 
-    const mcpData = mcpDoc.data();
+    const mcpData = mcpDoc.data() as any;
     
     return successResponse({
       mcp: {

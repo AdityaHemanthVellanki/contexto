@@ -101,10 +101,14 @@ async function deployToHeroku(appName: string, sourceUrl: string): Promise<{
     throw new Error('HEROKU_API_KEY environment variable is required');
   }
 
-  // First, verify the source URL is accessible
-  const headResponse = await fetch(sourceUrl, { method: 'HEAD' });
-  if (!headResponse.ok) {
-    throw new Error(`Source URL is not accessible: ${headResponse.statusText}`);
+  // First, verify the source URL is accessible using a minimal GET range probe
+  // Some presigned URLs do not allow HEAD; Range GET is broadly supported
+  const probeResponse = await fetch(sourceUrl, {
+    method: 'GET',
+    headers: { Range: 'bytes=0-15' }
+  });
+  if (!(probeResponse.ok || probeResponse.status === 206)) {
+    throw new Error(`Source URL is not accessible (status ${probeResponse.status}): ${probeResponse.statusText}`);
   }
 
   // Create build

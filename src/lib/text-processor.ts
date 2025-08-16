@@ -1,7 +1,7 @@
 import * as mammoth from 'mammoth';
-// @ts-ignore - Handle CommonJS module in ESModule context
-import * as pdfParse from 'pdf-parse';
-// Use proper ESModule syntax
+// Import the core module to avoid index.js debug harness that reads a test PDF
+// @ts-ignore - CJS interop, types are not provided
+import pdfParse from 'pdf-parse/lib/pdf-parse.js';
 // @ts-ignore - Tesseract.js has incomplete type definitions
 import * as Tesseract from 'tesseract.js';
 

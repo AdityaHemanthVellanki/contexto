@@ -4,13 +4,75 @@ import { getFirestore } from '@/lib/firebase-admin';
 
 // Define the pipeline status interface
 export interface PipelineStatus {
-  stage: 'uploading' | 'extracting' | 'chunking' | 'embedding' | 'indexing' | 'complete';
+  stage: 'downloading' | 'extracting' | 'chunking' | 'embedding' | 'indexing' | 'complete';
   progress: number;
   error?: string;
   totalChunks?: number;
   processedChunks?: number;
   startTime?: number;
   endTime?: number;
+}
+
+// Normalize various Firestore status shapes to a consistent payload for the client
+function mapStatusStringToStage(status: string): PipelineStatus['stage'] {
+  switch (status) {
+    case 'processing':
+      return 'downloading';
+    case 'embedding':
+      return 'embedding';
+    case 'indexing':
+    case 'generating_tools':
+    case 'exporting':
+      return 'indexing';
+    case 'complete':
+      return 'complete';
+    default:
+      return 'downloading';
+  }
+}
+
+function normalizeStatus(data: any): PipelineStatus {
+  const error = data?.error as string | undefined;
+  const s = data?.status;
+
+  // If status is already an object with stage/progress
+  if (s && typeof s === 'object') {
+    return {
+      stage: (s.stage as PipelineStatus['stage']) ?? 'downloading',
+      progress: (s.progress as number) ?? (s.progressPercent as number) ?? 0,
+      error,
+      totalChunks: (s.totalChunks as number) ?? (data?.totalChunks as number | undefined),
+      processedChunks: (s.processedChunks as number) ?? (data?.processedChunks as number | undefined),
+      startTime: s.startTime as number | undefined,
+      endTime: s.endTime as number | undefined,
+    };
+  }
+
+  // If status is a string like 'processing', 'embedding', 'indexing', 'complete'
+  if (typeof s === 'string') {
+    const stage = mapStatusStringToStage(s);
+    return {
+      stage,
+      progress: s === 'complete' ? 100 : 0,
+      error,
+      totalChunks: data?.totalChunks,
+      processedChunks: data?.processedChunks,
+    };
+  }
+
+  // Fallback if stage/progress are at the top-level (legacy)
+  if (data?.stage) {
+    return {
+      stage: (data.stage as PipelineStatus['stage']) ?? 'downloading',
+      progress: (data.progress as number) ?? 0,
+      error,
+      totalChunks: data?.totalChunks,
+      processedChunks: data?.processedChunks,
+    };
+  }
+
+  // Default
+  return { stage: 'downloading', progress: 0, error };
 }
 
 export async function GET(request: NextRequest) {
@@ -52,28 +114,26 @@ export async function GET(request: NextRequest) {
         }
         
         const data = doc.data();
-        if (data?.status) {
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify(data.status)}\n\n`));
-          
-          // If the pipeline is already complete, close the stream
-          if (data.status.stage === 'complete' || data.status.error) {
-            controller.close();
-            return;
-          }
+        const normalized = normalizeStatus(data);
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(normalized)}\n\n`));
+        
+        // If the pipeline is already complete or errored, close the stream
+        if (normalized.stage === 'complete' || normalized.error) {
+          controller.close();
+          return;
         }
         
         // Set up real-time listener for updates
         const unsubscribe = pipelineRef.onSnapshot((snapshot) => {
           if (snapshot.exists) {
             const data = snapshot.data();
-            if (data?.status) {
-              controller.enqueue(encoder.encode(`data: ${JSON.stringify(data.status)}\n\n`));
-              
-              // Close the stream if the pipeline is complete or has an error
-              if (data.status.stage === 'complete' || data.status.error) {
-                unsubscribe();
-                controller.close();
-              }
+            const normalized = normalizeStatus(data);
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify(normalized)}\n\n`));
+            
+            // Close the stream if the pipeline is complete or has an error
+            if (normalized.stage === 'complete' || normalized.error) {
+              unsubscribe();
+              controller.close();
             }
           } else {
             controller.enqueue(encoder.encode(`data: ${JSON.stringify({ error: 'Pipeline deleted' })}\n\n`));
@@ -142,7 +202,8 @@ export async function POST(request: NextRequest) {
     }
     
     const data = doc.data();
-    return NextResponse.json(data?.status || { stage: 'uploading', progress: 0 });
+    const normalized = normalizeStatus(data);
+    return NextResponse.json(normalized);
   } catch (error) {
     console.error('Error getting pipeline status:', error);
     return NextResponse.json(

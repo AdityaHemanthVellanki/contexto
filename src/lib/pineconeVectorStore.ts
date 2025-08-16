@@ -90,20 +90,35 @@ export class PineconeVectorStore implements VectorStore {
     }
 
     try {
-      // In a real implementation, we would query Pinecone for similar vectors
-      console.log(`Querying Pinecone index ${this.indexName} in namespace ${this.namespace} for top ${topK} results`);
+      // Use the existing Pinecone index instance
+      const namespace = this.index.namespace(this.namespace);
       
-      // Return placeholder results
-      return Array(Math.min(topK, 3)).fill(null).map((_, i) => ({
-        id: `placeholder-${i}`,
-        score: 0.9 - (i * 0.1),
-        metadata: {
-          text: `Placeholder result ${i}`,
-          fileId: 'placeholder-file',
-          fileName: 'placeholder.txt',
-          chunkIndex: i
+      console.log(`🔍 Querying Pinecone index ${this.indexName} in namespace ${this.namespace} for top ${topK} results`);
+      
+      // Perform the actual Pinecone query
+      const queryResponse = await namespace.query({
+        vector: embedding,
+        topK: topK,
+        includeMetadata: true,
+        includeValues: false,
+        filter: filter
+      });
+      
+      // Transform Pinecone results to our format
+      const results: VectorQueryResult[] = (queryResponse.matches || []).map((match: any) => ({
+        id: match.id,
+        score: match.score || 0,
+        metadata: match.metadata || {
+          text: '',
+          fileId: '',
+          fileName: '',
+          chunkIndex: 0
         }
       }));
+      
+      console.log(`✅ Query returned ${results.length} results from Pinecone`);
+      return results;
+      
     } catch (error) {
       console.error('Error querying Pinecone vector store:', error);
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';

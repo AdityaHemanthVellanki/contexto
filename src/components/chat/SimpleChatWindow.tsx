@@ -7,6 +7,7 @@ import { useAuth } from '@/hooks/useAuth';
 import { getAuth } from 'firebase/auth';
 import { app } from '@/lib/firebase';
 import { Upload, Download, Loader2, Rocket, ChevronDown, AlertCircle } from 'lucide-react';
+import { DeploymentStatus } from '@/components/deployment/DeploymentStatus';
 
 interface UploadedFile {
   fileId: string;
@@ -31,6 +32,7 @@ interface Message {
     vectorStoreEndpoint?: string;
     storeType?: string;
     serviceId?: string;
+    deploymentId?: string;
   };
 }
 
@@ -297,8 +299,11 @@ export default function SimpleChatWindow({ chatId }: SimpleChatWindowProps) {
           'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({
-          fileId: currentFileId,
-          purpose: purposeInput
+          fileIds: currentFileId ? [currentFileId] : [],
+          description: purposeInput,
+          tools: [],
+          autoGenerateTools: true,
+          name: ''
         })
       });
 
@@ -307,12 +312,16 @@ export default function SimpleChatWindow({ chatId }: SimpleChatWindowProps) {
         throw new Error(error.error || 'Processing failed');
       }
 
-      const { downloadUrl, pipelineId } = await response.json();
+      const json = await response.json();
+      const pipelineId: string | undefined = json?.pipelineId;
+      if (!pipelineId) {
+        throw new Error('Pipeline API did not return pipelineId');
+      }
       setCurrentPipelineId(pipelineId);
 
-      // Update state and show completion message
+      // Update state and show message; export URL may be available later via status updates
       setChatState('complete');
-      addMessage('ai', '🎉 Your MCP pipeline is ready!', { downloadUrl, fileId: currentFileId, pipelineId });
+      addMessage('ai', '🎉 Your MCP pipeline has started processing!', { fileId: currentFileId, pipelineId });
 
     } catch (error) {
       console.error('Processing error:', error);
@@ -355,16 +364,6 @@ export default function SimpleChatWindow({ chatId }: SimpleChatWindowProps) {
         throw new Error(error.error || 'Vector store deployment failed');
       }
 
-      const { vectorStoreEndpoint, storeType } = await vectorStoreResponse.json();
-      addMessage('ai', `✅ Vector store deployed: ${storeType}`);
-
-      // Step 2: Deploy MCP Server and generate VS Code extension
-      addMessage('ai', '🚀 Deploying MCP server to Heroku and generating VS Code extension...');
-      const serverResponse = await fetch('/api/deployServer', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({ pipelineId, fileId })
       });
@@ -374,7 +373,7 @@ export default function SimpleChatWindow({ chatId }: SimpleChatWindowProps) {
         throw new Error(error.error || 'Server deployment failed');
       }
 
-      const { mcpUrl, vsixUrl, serviceId } = await serverResponse.json();
+      const { mcpUrl, vsixUrl, serviceId, deploymentId: returnedDeploymentId } = await serverResponse.json();
 
       // Success message with deployment details
       setChatState('complete');
@@ -393,7 +392,8 @@ Then run "Contexto: Ask MCP" command in VS Code!`, {
         vsixUrl,
         vectorStoreEndpoint,
         storeType,
-        serviceId
+        serviceId,
+        deploymentId: returnedDeploymentId || computedDeploymentId
       });
 
     } catch (error) {
@@ -486,6 +486,12 @@ Then run "Contexto: Ask MCP" command in VS Code!`, {
             </div>
           </div>
         )}
+
+        {message.metadata?.deploymentId && (
+          <div className="mt-3">
+            <DeploymentStatus deploymentId={message.metadata.deploymentId} />
+          </div>
+        )}
         
         <div className="text-xs opacity-70 mt-2">
           {message.timestamp.toLocaleTimeString()}
@@ -529,6 +535,7 @@ Then run "Contexto: Ask MCP" command in VS Code!`, {
             id: `vector-store-${Date.now()}`,
             type: 'ai',
             content: `Vector store created successfully!\n\n**Index Name**: ${result.indexName}`,
+            timestamp: new Date(),
           }
         ]);
       } else {
@@ -538,6 +545,7 @@ Then run "Contexto: Ask MCP" command in VS Code!`, {
             id: `vector-store-error-${Date.now()}`,
             type: 'ai',
             content: `Vector store creation failed: ${result.error}`,
+            timestamp: new Date(),
           }
         ]);
       }
@@ -548,6 +556,7 @@ Then run "Contexto: Ask MCP" command in VS Code!`, {
           id: `vector-store-error-${Date.now()}`,
           type: 'ai',
           content: `Vector store creation failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+          timestamp: new Date(),
         }
       ]);
     }

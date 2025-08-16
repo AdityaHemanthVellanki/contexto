@@ -12,6 +12,7 @@ import {
   deleteDoc, 
   doc,
   addDoc,
+  updateDoc,
   serverTimestamp
 } from 'firebase/firestore';
 import { Button } from '@/components/ui/button';
@@ -140,11 +141,38 @@ export default function MCPDashboard() {
   const handleCreateMCP = async () => {
     setIsCreating(true);
     try {
+      // Step 1: Handle file upload if present
+      let fileIds: string[] = [];
+      if (uploadedFile) {
+        console.log('📤 Uploading file to R2:', uploadedFile.name);
+        const formData = new FormData();
+        formData.append('file', uploadedFile);
+        
+        const uploadResponse = await fetch('/api/uploads', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${await user!.getIdToken()}`,
+          },
+          body: formData,
+        });
+        
+        if (!uploadResponse.ok) {
+          const error = await uploadResponse.text();
+          throw new Error(`File upload failed: ${error}`);
+        }
+        
+        const uploadResult = await uploadResponse.json();
+        fileIds = [uploadResult.fileId];
+        console.log('✅ File uploaded successfully:', uploadResult.fileId);
+      }
+      
+      // Step 2: Create MCP document in Firestore
       const baseData: any = {
         userId: user!.uid,
         title: formData.name.trim(),
         autoGenerateTools: formData.autoGenerateTools,
-        status: 'processing',
+        status: 'initializing',
+        fileIds: fileIds,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       };
@@ -166,9 +194,51 @@ export default function MCPDashboard() {
         baseData.fileName = uploadedFile.name;
       }
 
-      await addDoc(collection(db, 'mcps'), baseData);
+      const mcpDocRef = await addDoc(collection(db, 'mcps'), baseData);
+      const mcpId = mcpDocRef.id;
+      console.log('✅ MCP document created:', mcpId);
       
-      toast.success('MCP creation started!');
+      // Step 3: Trigger pipeline processing
+      console.log('🚀 Starting pipeline processing...');
+      const pipelinePayload = {
+        fileIds: fileIds,
+        description: formData.description || formData.data || 'Process this MCP',
+        tools: [],
+        autoGenerateTools: formData.autoGenerateTools,
+        name: formData.name.trim(),
+        mcpId: mcpId
+      };
+      
+      const pipelineResponse = await fetch('/api/processPipeline', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${await user!.getIdToken()}`,
+        },
+        body: JSON.stringify(pipelinePayload),
+      });
+      
+      if (!pipelineResponse.ok) {
+        const error = await pipelineResponse.text();
+        throw new Error(`Pipeline processing failed: ${error}`);
+      }
+      
+      const pipelineResult = await pipelineResponse.json();
+      console.log('✅ Pipeline started:', pipelineResult);
+      
+      const returnedPipelineId: string | undefined = pipelineResult?.pipelineId;
+      if (!returnedPipelineId) {
+        throw new Error('Pipeline API did not return pipelineId');
+      }
+      
+      // Step 4: Update MCP document with pipeline ID
+      await updateDoc(doc(db, 'mcps', mcpId), {
+        pipelineId: returnedPipelineId,
+        status: 'processing',
+        updatedAt: serverTimestamp(),
+      });
+      
+      toast.success('MCP creation started! Processing your data...');
       setShowOnboarding(false);
       setCurrentStep(1);
       setFormData({
@@ -182,7 +252,7 @@ export default function MCPDashboard() {
       setUploadedFile(null);
     } catch (error) {
       console.error('Error creating MCP:', error);
-      toast.error('Failed to create MCP');
+      toast.error(error instanceof Error ? error.message : 'Failed to create MCP');
     } finally {
       setIsCreating(false);
     }

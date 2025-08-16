@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { errorResponse, successResponse } from '../../../lib/api-middleware';
 import { generateEmbeddings } from '../../../lib/azure-openai';
-import { upsertEmbeddings } from '../../../lib/pinecone-client';
+import { upsertEmbeddings, getOrCreateIndex } from '../../../lib/pinecone-client';
 import { r2Client, generateDownloadUrl } from '../../../lib/r2-client';
 import { processFileToChunks } from '../../../lib/text-processor';
 // Admin Firestore is used instead of client SDK
@@ -256,8 +256,8 @@ async function processPipelineAsync(
       updatedAt: FieldValue.serverTimestamp()
     });
     
-    // Create index name from user ID and pipeline ID
-    const indexName = `user-${userId}-pipeline-${pipelineId}`;
+    // Ensure Pinecone index exists and is ready (unified naming via client)
+    const indexName = await getOrCreateIndex(userId, pipelineId);
     
     // Convert chunks and embeddings to the format expected by upsertEmbeddings
     // createEmbeddings returns array of {embedding: number[]} objects

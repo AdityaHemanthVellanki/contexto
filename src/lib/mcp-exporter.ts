@@ -1,4 +1,4 @@
-import { generateUploadUrl, generateFileKey } from '@/lib/r2-client';
+import { generateUploadUrl } from '@/lib/r2-client';
 import { getFirestore } from '@/lib/firebase-admin';
 import { v4 as uuidv4 } from 'uuid';
 import * as fs from 'fs';
@@ -47,7 +47,8 @@ function generatePackageJson(pipelineId: string): string {
     },
     dependencies: {
       '@modelcontextprotocol/sdk': '^0.4.0',
-      'dotenv': '^16.0.0'
+      'dotenv': '^16.0.0',
+      'express': '^4.18.2'
     },
     engines: {
       node: '>=18.0.0'
@@ -64,6 +65,7 @@ function generateServerJs(pipeline: PipelineData): string {
 const { Server } = require('@modelcontextprotocol/sdk/server/index.js');
 const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio.js');
 const { CallToolRequestSchema, ListToolsRequestSchema } = require('@modelcontextprotocol/sdk/types.js');
+const express = require('express');
 
 // Load environment variables
 require('dotenv').config();
@@ -72,7 +74,7 @@ const server = new Server({
   name: 'contexto-pipeline-${pipeline.id}',
   version: '1.0.0',
   description: 'RAG pipeline for ${pipeline.metadata.purpose}'
-}, {4
+}, {
   capabilities: {
     tools: {}
   }
@@ -145,6 +147,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     default:
       throw new Error(\`Unknown tool: \${name}\`);
   }
+});
+
+// Start a minimal HTTP server to satisfy Heroku's web dyno requirements
+const app = express();
+const PORT = process.env.PORT || 3000;
+app.get('/', (_req, res) => res.send('Contexto MCP server is running for pipeline ${pipeline.id}'));
+app.get('/health', (_req, res) => res.send('ok'));
+app.listen(PORT, () => {
+  console.error('HTTP server listening on port ' + PORT);
 });
 
 // Search function implementation
@@ -335,9 +346,16 @@ export async function exportMCPBundle(pipelineId: string, userId: string): Promi
         path.join(tempDir, 'README.md'),
         generateReadme(pipelineData)
       );
+
+      // Ensure Heroku runs a web dyno
+      await fs.promises.writeFile(
+        path.join(tempDir, 'Procfile'),
+        'web: node server.js\n'
+      );
       
       // Create ZIP archive
-      const zipPath = path.join(tempDir, 'mcp-pipeline.zip');
+      // Create the ZIP outside of sourceDir to avoid self-inclusion
+      const zipPath = path.join(os.tmpdir(), `mcp-pipeline-${pipelineId}-${Date.now()}.zip`);
       await createZipArchive(tempDir, zipPath);
       
       // Upload to R2
@@ -374,8 +392,9 @@ export async function exportMCPBundle(pipelineId: string, userId: string): Promi
       
       await db.collection('exports').doc(exportId).set(exportMetadata);
       
-      // Generate download URL (this will be publicly accessible)
-      const downloadUrl = `https://${process.env.CF_R2_BUCKET_NAME}.r2.dev/${r2Key}`;
+      // Generate a short-lived private download URL for secure deployment
+      const { generateMCPDownloadUrl } = await import('@/lib/r2-client');
+      const downloadUrl = await generateMCPDownloadUrl(r2Key);
       
       return {
         exportId,

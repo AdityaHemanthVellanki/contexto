@@ -86,17 +86,69 @@ export async function ensureIndex(indexName: string): Promise<void> {
 }
 
 /**
+ * Wait for a Pinecone index to become ready.
+ * Polls describeIndex until status.ready is true (or state === 'Ready').
+ */
+export async function waitForIndexReady(
+  indexName: string,
+  timeoutMs: number = 180_000,
+  pollIntervalMs: number = 5_000
+): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try {
+      // @ts-ignore - Pinecone SDK method is available at runtime
+      const desc = await pinecone.describeIndex(indexName);
+      const ready = Boolean(desc?.status?.ready);
+      const state = desc?.status?.state as string | undefined;
+      if (ready || state === 'Ready') {
+        return;
+      }
+    } catch (err: any) {
+      // If not found yet, continue polling. Log and continue on transient errors.
+      const msg = err?.message || '';
+      if (err?.name === 'PineconeNotFoundError' || err?.status === 404 || msg.includes('404')) {
+        // keep waiting
+      } else {
+        console.warn('Pinecone describeIndex transient error:', err);
+      }
+    }
+    await new Promise((res) => setTimeout(res, pollIntervalMs));
+  }
+  throw new Error(`Pinecone index ${indexName} not ready within ${timeoutMs}ms`);
+}
+
+/**
+ * Ensure an index exists and is ready for traffic.
+ */
+export async function ensureIndexAndWait(
+  indexName: string,
+  timeoutMs?: number,
+  pollIntervalMs?: number
+): Promise<void> {
+  await ensureIndex(indexName);
+  await waitForIndexReady(indexName, timeoutMs ?? 180_000, pollIntervalMs ?? 5_000);
+}
+
+/**
  * Get or create a Pinecone index for a user's pipeline
  */
 export async function getOrCreateIndex(userId: string, pipelineId: string): Promise<string> {
-  const indexName = `ctx-${userId}-${pipelineId}`.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+  // Pinecone index name must be <= 45 chars, lowercase, a-z0-9- only
+  // Build a compact, stable name from truncated sanitized IDs
+  const userPart = userId.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 12);
+  const pipePart = pipelineId.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 12);
+  const indexName = `ctx-${userPart}-${pipePart}`;
   
   try {
     // Check if index exists
     const existingIndex = (await listIndexes()).find(index => index === indexName);
     
     if (!existingIndex) {
-      await ensureIndex(indexName);
+      await ensureIndexAndWait(indexName);
+    } else {
+      // Ensure the existing index is ready before returning
+      await waitForIndexReady(indexName);
     }
     
     return indexName;

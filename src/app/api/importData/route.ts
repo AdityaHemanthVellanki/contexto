@@ -14,38 +14,31 @@ export async function POST(request: NextRequest) {
     // Process the import data and log to Firestore
     
     const formData = await request.formData();
-    const files = formData.getAll('files');
+    const files = formData.getAll('files') as File[];
     
-    if (!files.length) {
+    if (files.length === 0) {
       return NextResponse.json({ error: 'No files provided' }, { status: 400 });
     }
     
-    // Log import attempt to Firestore
-    await addDoc(collection(db, 'dataImports'), {
-      userId: session.uid,
-      fileCount: files.length,
-      fileNames: files.map((file: any) => file.name),
-      timestamp: serverTimestamp(),
-    });
+    console.log(`[importData] Redirecting ${files.length} files to pipeline processing...`);
     
-    // In a real implementation, we would:
-    // 1. Process the files (chunk text, extract content)
-    // 2. Store the chunks in a vector database
-    // 3. Create embeddings for retrieval
-    
-    // Simulate processing time
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    // For backward compatibility, we'll redirect this to the main pipeline
+    // Users should use /api/uploads for file upload and /api/processPipeline for processing
     
     return NextResponse.json({ 
-      success: true, 
-      message: 'Files processed successfully',
+      success: false, 
+      message: 'Please use /api/uploads for file upload and /api/processPipeline for processing',
+      redirect: {
+        upload: '/api/uploads',
+        process: '/api/processPipeline'
+      },
       fileCount: files.length
-    });
+    }, { status: 301 });
     
   } catch (error) {
-    console.error('Error processing files:', error);
+    console.error('Error in importData:', error);
     return NextResponse.json({ 
-      error: 'Failed to process files',
+      error: 'Failed to process request',
       details: error instanceof Error ? error.message : 'Unknown error' 
     }, { status: 500 });
   }
