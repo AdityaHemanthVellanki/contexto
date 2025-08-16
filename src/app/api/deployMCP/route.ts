@@ -182,6 +182,8 @@ async function pollBuildStatus(appName: string, buildId: string, maxWaitTime = 1
  * POST /api/deployMCP - Deploy MCP pipeline to Heroku
  */
 export const POST = withAuth(async (req) => {
+  // Track created deployment document ID for failure updates across try/catch
+  let deploymentDocId: string | null = null;
   try {
     const body: DeployMCPRequest = await req.json();
     const validation = DeployMCPSchema.safeParse(body);
@@ -203,6 +205,9 @@ export const POST = withAuth(async (req) => {
 
     console.log(`Starting MCP deployment for pipeline ${pipelineId} to app ${appName}`);
 
+    // Initialize Firestore for deployment tracking
+    const db = await getFirestore();
+
     // Step 1: Export MCP bundle
     console.log('Exporting MCP bundle...');
     const exportResult = await exportMCPBundle(pipelineId, req.userId);
@@ -219,44 +224,70 @@ export const POST = withAuth(async (req) => {
     console.log('Deploying source...');
     const build = await deployToHeroku(app.name, exportResult.downloadUrl);
     
-    // Step 5: Poll build status
-    console.log('Waiting for build to complete...');
-    const buildResult = await pollBuildStatus(app.name, build.id);
-    
-    if (buildResult.status !== 'succeeded') {
-      throw new Error(`Build failed. Check build logs: ${buildResult.output_stream_url}`);
-    }
-
-    // Store deployment metadata in Firestore
-    const db = await getFirestore();
-    const deploymentMetadata = {
+    // Create initial deployment record (status: building)
+    await db.collection('deployments').doc(build.id).set({
       id: build.id,
       pipelineId,
       userId: req.userId,
       appName: app.name,
       appUrl: app.web_url,
-      exportId: exportResult.exportId,
-      status: 'deployed',
+      status: 'building',
       createdAt: new Date(),
+      updatedAt: new Date(),
       buildId: build.id
-    };
+    });
+    // Remember the doc id to allow terminal updates on errors/timeouts
+    deploymentDocId = build.id;
     
-    await db.collection('deployments').doc(build.id).set(deploymentMetadata);
+    // Step 5: Poll build status
+    console.log('Waiting for build to complete...');
+    const buildResult = await pollBuildStatus(app.name, build.id);
+    
+    if (buildResult.status !== 'succeeded') {
+      await db.collection('deployments').doc(build.id).set({
+        status: 'failed',
+        updatedAt: new Date(),
+        error: `Build failed. Check build logs: ${buildResult.output_stream_url}`
+      }, { merge: true });
+      throw new Error(`Build failed. Check build logs: ${buildResult.output_stream_url}`);
+    }
+
+    // Update deployment record (status: deployed)
+    await db.collection('deployments').doc(build.id).set({
+      status: 'deployed',
+      updatedAt: new Date(),
+      exportId: exportResult.exportId
+    }, { merge: true });
 
     return successResponse({
       message: 'MCP pipeline deployed successfully',
+      deploymentId: build.id,
       deployment: {
         appName: app.name,
         appUrl: app.web_url,
         buildId: build.id,
         exportId: exportResult.exportId,
-        status: 'deployed'
+        status: 'deployed',
+        deploymentId: build.id
       }
     });
 
   } catch (error) {
     console.error('MCP deployment error:', error);
     const errorMessage = error instanceof Error ? error.message : String(error);
+    // Best-effort: mark deployment as failed if a deployment doc was created
+    try {
+      if (deploymentDocId) {
+        const db = await getFirestore();
+        await db.collection('deployments').doc(deploymentDocId).set({
+          status: 'failed',
+          updatedAt: new Date(),
+          error: errorMessage
+        }, { merge: true });
+      }
+    } catch (e) {
+      console.error('Failed to update Firestore deployment doc with failure state:', e);
+    }
     return errorResponse(`Deployment failed: ${errorMessage}`, 500);
   }
 });

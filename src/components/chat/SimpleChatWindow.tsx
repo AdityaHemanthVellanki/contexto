@@ -364,8 +364,16 @@ export default function SimpleChatWindow({ chatId }: SimpleChatWindowProps) {
         throw new Error(error.error || 'Vector store deployment failed');
       }
 
+      const { vectorStoreEndpoint, storeType } = await vectorStoreResponse.json();
+
+      // Step 2: Deploy MCP server (returns deploymentId we will use for polling)
+      const serverResponse = await fetch('/api/deployMCP', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
         },
-        body: JSON.stringify({ pipelineId, fileId })
+        body: JSON.stringify({ pipelineId })
       });
 
       if (!serverResponse.ok) {
@@ -373,27 +381,17 @@ export default function SimpleChatWindow({ chatId }: SimpleChatWindowProps) {
         throw new Error(error.error || 'Server deployment failed');
       }
 
-      const { mcpUrl, vsixUrl, serviceId, deploymentId: returnedDeploymentId } = await serverResponse.json();
+      const serverJson = await serverResponse.json();
+      const returnedDeploymentId: string | undefined = serverJson?.deploymentId || serverJson?.deployment?.deploymentId;
+      const mcpUrl: string | undefined = serverJson?.deployment?.appUrl || serverJson?.appUrl;
 
-      // Success message with deployment details
+      // Success message with deployment details and deployment status tracker
       setChatState('complete');
-      addMessage('ai', `✅ Heroku deployment complete!
-
-• **MCP endpoint:** ${mcpUrl}
-• **[Download VS Code extension](${vsixUrl})**
-
-**Install in VS Code:**
-\`\`\`bash
-code --install-extension ${vsixUrl.split('/').pop()}
-\`\`\`
-
-Then run "Contexto: Ask MCP" command in VS Code!`, {
+      addMessage('ai', `✅ MCP deployment complete!`, {
         mcpUrl,
-        vsixUrl,
         vectorStoreEndpoint,
         storeType,
-        serviceId,
-        deploymentId: returnedDeploymentId || computedDeploymentId
+        deploymentId: returnedDeploymentId
       });
 
     } catch (error) {
@@ -457,6 +455,24 @@ Then run "Contexto: Ask MCP" command in VS Code!`, {
                 {isDeploying ? 'Deploying...' : 'Deploy to Heroku'}
               </button>
             )}
+          </div>
+        )}
+
+        {/* Show Deploy button even if there's no downloadUrl, as long as we have fileId and pipelineId */}
+        {!message.metadata?.downloadUrl && message.metadata?.fileId && message.metadata?.pipelineId && !message.metadata?.mcpUrl && (
+          <div className="mt-3">
+            <button
+              onClick={() => deployPipeline(message.metadata!.fileId!, message.metadata!.pipelineId!)}
+              disabled={isDeploying}
+              className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white rounded-lg transition-colors"
+            >
+              {isDeploying ? (
+                <Loader2 className="animate-spin" size={16} />
+              ) : (
+                <Rocket size={16} />
+              )}
+              {isDeploying ? 'Deploying...' : 'Deploy to Heroku'}
+            </button>
           </div>
         )}
         
