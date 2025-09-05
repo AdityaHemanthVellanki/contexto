@@ -131,27 +131,60 @@ export async function ensureIndexAndWait(
 }
 
 /**
- * Get or create a Pinecone index for a user's pipeline
+ * Get or create a Pinecone index. Reuse a shared index (via env or existing)
+ * instead of creating a new index per pipeline to avoid serverless index limits.
  */
 export async function getOrCreateIndex(userId: string, pipelineId: string): Promise<string> {
-  // Pinecone index name must be <= 45 chars, lowercase, a-z0-9- only
-  // Build a compact, stable name from truncated sanitized IDs
-  const userPart = userId.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 12);
-  const pipePart = pipelineId.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 12);
-  const indexName = `ctx-${userPart}-${pipePart}`;
-  
+  // Preferred index name from env (if provided)
+  const envIndex = (process.env.PINECONE_INDEX || process.env.PINECONE_INDEX_NAME || '').toLowerCase();
+  const fallbackSharedName = 'ctx-shared'; // short, safe, <=45 chars
+
   try {
-    // Check if index exists
-    const existingIndex = (await listIndexes()).find(index => index === indexName);
-    
-    if (!existingIndex) {
-      await ensureIndexAndWait(indexName);
-    } else {
-      // Ensure the existing index is ready before returning
-      await waitForIndexReady(indexName);
+    const indexes = await listIndexes();
+
+    // 1) If env index is set, use it (create if needed)
+    if (envIndex) {
+      if (indexes.includes(envIndex)) {
+        await waitForIndexReady(envIndex);
+        return envIndex;
+      }
+      // Try to create the env-configured index; fall back on quota errors
+      try {
+        await ensureIndexAndWait(envIndex);
+        return envIndex;
+      } catch (e: any) {
+        const msg = (e?.message || '').toLowerCase();
+        if (e?.status === 403 || msg.includes('max serverless indexes') || msg.includes('forbidden')) {
+          // Fall back to any existing index
+          if (indexes.length > 0) {
+            const chosen = indexes[0];
+            await waitForIndexReady(chosen);
+            return chosen;
+          }
+        }
+        throw e;
+      }
     }
-    
-    return indexName;
+
+    // 2) No env index: reuse an existing index if one exists
+    if (indexes.length > 0) {
+      const chosen = indexes[0];
+      await waitForIndexReady(chosen);
+      return chosen;
+    }
+
+    // 3) No existing indexes: create a single shared index
+    try {
+      await ensureIndexAndWait(fallbackSharedName);
+      return fallbackSharedName;
+    } catch (e: any) {
+      const msg = (e?.message || '').toLowerCase();
+      if (e?.status === 403 || msg.includes('max serverless indexes') || msg.includes('forbidden')) {
+        // Quota full and no indexes listed; rethrow with guidance
+        throw new Error('Pinecone index quota reached. Set PINECONE_INDEX to an existing index or delete unused indexes.');
+      }
+      throw e;
+    }
   } catch (error) {
     console.error('Error getting or creating Pinecone index:', error);
     throw new Error(`Failed to get or create index for user ${userId} and pipeline ${pipelineId}`);

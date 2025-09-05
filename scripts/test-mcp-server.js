@@ -16,10 +16,12 @@
 const fs = require('fs');
 const path = require('path');
 const fetch = require('node-fetch');
+const dotenv = require('dotenv');
+dotenv.config();
 
 // Test configuration
 const TEST_CONFIG = {
-  baseUrl: 'http://localhost:3001',
+  baseUrl: 'http://localhost:3000',
   testFiles: [
     {
       name: 'test-document.txt',
@@ -69,6 +71,39 @@ This document contains enough content to test chunking, embedding, and retrieval
     'Explain the technical architecture'
   ]
 };
+
+// Obtain a real Firebase ID token using Email/Password via Identity Toolkit REST API
+async function getAuthToken() {
+  const apiKey = process.env.NEXT_PUBLIC_FIREBASE_API_KEY || process.env.FIREBASE_API_KEY;
+  const email = process.env.TEST_USER_EMAIL;
+  const password = process.env.TEST_USER_PASSWORD;
+
+  if (!apiKey) {
+    throw new Error('Missing NEXT_PUBLIC_FIREBASE_API_KEY (or FIREBASE_API_KEY) in environment');
+  }
+  if (!email || !password) {
+    throw new Error('Missing TEST_USER_EMAIL or TEST_USER_PASSWORD in environment');
+  }
+
+  const url = `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${apiKey}`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password, returnSecureToken: true })
+  });
+
+  if (!res.ok) {
+    let detail = '';
+    try { detail = JSON.stringify(await res.json()); } catch {}
+    throw new Error(`Firebase auth failed: ${res.status} ${res.statusText} ${detail}`);
+  }
+
+  const data = await res.json();
+  if (!data.idToken) {
+    throw new Error('Firebase auth response missing idToken');
+  }
+  return data.idToken;
+}
 
 class MCPServerTester {
   constructor() {
@@ -356,6 +391,14 @@ class MCPServerTester {
     this.log('Testing production-grade MCP server with real integrations', 'info');
     
     try {
+      // Authenticate with Firebase to simulate a real user session
+      this.log('🔐 Authenticating test user via Firebase', 'info');
+      this.authToken = await getAuthToken();
+      if (!this.authToken) {
+        throw new Error('Failed to obtain Firebase ID token');
+      }
+      this.log('✅ Authentication successful - acquired ID token', 'success');
+      
       // Test 1: File Upload
       const fileData = await this.testFileUpload();
       

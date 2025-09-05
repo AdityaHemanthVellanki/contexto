@@ -16,6 +16,8 @@ interface PipelineData {
     chunksCount: number;
     chunkSize: number;
     overlap: number;
+    indexName?: string;
+    namespace?: string;
   };
   config: {
     embedding: {
@@ -48,7 +50,9 @@ function generatePackageJson(pipelineId: string): string {
     dependencies: {
       '@modelcontextprotocol/sdk': '^0.4.0',
       'dotenv': '^16.0.0',
-      'express': '^4.18.2'
+      'express': '^4.18.2',
+      '@pinecone-database/pinecone': '^4.0.0',
+      'openai': '^4.56.0'
     },
     engines: {
       node: '>=18.0.0'
@@ -60,12 +64,16 @@ function generatePackageJson(pipelineId: string): string {
  * Generate MCP server.js file
  */
 function generateServerJs(pipeline: PipelineData): string {
+  const defaultIndexName = (pipeline as any).indexName || pipeline.metadata.indexName || pipeline.metadata.vectorStore || 'ctx-shared';
+  const defaultNamespace = (pipeline as any).namespace || pipeline.metadata.namespace || '';
   return `#!/usr/bin/env node
 
 const { Server } = require('@modelcontextprotocol/sdk/server/index.js');
 const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio.js');
 const { CallToolRequestSchema, ListToolsRequestSchema } = require('@modelcontextprotocol/sdk/types.js');
 const express = require('express');
+const { Pinecone } = require('@pinecone-database/pinecone');
+const OpenAI = require('openai');
 
 // Load environment variables
 require('dotenv').config();
@@ -161,14 +169,96 @@ app.listen(PORT, () => {
 // Search function implementation
 async function searchKnowledge(query, limit = ${pipeline.config.retrieval.topK}) {
   try {
-    // This would integrate with your vector store
-    // For now, return a placeholder response
+    // Validate env
+    const AZKEY = process.env.AZURE_OPENAI_API_KEY;
+    const AZEP = (process.env.AZURE_OPENAI_ENDPOINT || '').replace(/\/$/, '')
+    const AZ_EMBED_DEP = process.env.AZURE_OPENAI_DEPLOYMENT_EMBEDDING;
+    const AZ_CHAT_DEP = process.env.AZURE_OPENAI_DEPLOYMENT_GPT4 || process.env.AZURE_OPENAI_DEPLOYMENT_TURBO;
+    const AZ_API_VERSION = process.env.AZURE_OPENAI_API_VERSION || '2024-02-15-preview';
+    const PINECONE_API_KEY = process.env.PINECONE_API_KEY;
+    const DEFAULT_INDEX_NAME = process.env.PINECONE_INDEX || process.env.PINECONE_INDEX_NAME || '${defaultIndexName}';
+    const DEFAULT_NAMESPACE = process.env.PINECONE_NAMESPACE || '${defaultNamespace}';
+
+    if (!PINECONE_API_KEY) {
+      throw new Error('Missing PINECONE_API_KEY');
+    }
+    if (!AZKEY || !AZEP || !AZ_EMBED_DEP) {
+      throw new Error('Missing Azure OpenAI embedding configuration (AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_DEPLOYMENT_EMBEDDING)');
+    }
+
+    // Init Pinecone client
+    const pc = new Pinecone({ apiKey: PINECONE_API_KEY });
+    const index = pc.index(DEFAULT_INDEX_NAME);
+
+    // Init Azure OpenAI clients
+    const embedClient = new OpenAI({
+      apiKey: AZKEY,
+      baseURL: AZEP + '/openai/deployments/' + AZ_EMBED_DEP,
+      defaultQuery: { 'api-version': AZ_API_VERSION },
+      defaultHeaders: { 'api-key': AZKEY }
+    });
+
+    const chatEnabled = Boolean(AZ_CHAT_DEP);
+    const chatClient = chatEnabled ? new OpenAI({
+      apiKey: AZKEY,
+      baseURL: AZEP + '/openai/deployments/' + AZ_CHAT_DEP,
+      defaultQuery: { 'api-version': AZ_API_VERSION },
+      defaultHeaders: { 'api-key': AZKEY }
+    }) : null;
+
+    // Create query embedding
+    const emb = await embedClient.embeddings.create({ input: query, model: AZ_EMBED_DEP });
+    const vector = emb?.data?.[0]?.embedding;
+    if (!vector) throw new Error('Failed to generate query embedding');
+
+    // Query Pinecone (namespace per user)
+    const ns = DEFAULT_NAMESPACE || undefined;
+    const results = await index.namespace(ns).query({
+      topK: Number(limit) || ${pipeline.config.retrieval.topK},
+      vector,
+      includeMetadata: true
+    });
+
+    const matches = results?.matches || [];
+    if (!matches.length) {
+      return {
+        content: [{ type: 'text', text: \`No results found for: "\${query}"\` }]
+      };
+    }
+
+    // Build context from top matches
+    const sources = matches.map((m, i) => ({
+      score: m.score,
+      text: m?.metadata?.text || '',
+      fileName: m?.metadata?.fileName || '${pipeline.metadata.fileName}',
+      chunkIndex: m?.metadata?.chunkIndex ?? i
+    }));
+    const context = sources.map((s, i) => \`[\${i+1}] \${s.text}\`).join('\n\n');
+
+    // Optional summarization via Azure OpenAI
+    let answer = \`Top \${Math.min(sources.length, Number(limit) || ${pipeline.config.retrieval.topK})} results for: "\${query}"\n\n\${sources.map((s,i)=>\`[\${i+1}] (\${(s.score||0).toFixed(4)}) \${s.text.substring(0,300)}\${s.text.length>300?'…':''}\`).join('\n\n')}\`;
+    if (chatEnabled && chatClient) {
+      try {
+        const completion = await chatClient.chat.completions.create({
+          model: AZ_CHAT_DEP,
+          temperature: 0.2,
+          messages: [
+            { role: 'system', content: 'You are a helpful assistant. Use the provided context excerpts to answer.' },
+            { role: 'user', content: \`Context:\n\${context}\n\nQuestion: \${query}\n\nProvide a concise answer and cite sources as [1], [2], etc.\` }
+          ]
+        });
+        const msg = completion?.choices?.[0]?.message?.content;
+        if (msg) answer = msg;
+      } catch (e) {
+        // Fallback to raw snippets if chat fails
+      }
+    }
+
+    // Return MCP tool response format
     return {
       content: [
-        {
-          type: 'text',
-          text: \`Search results for: "\${query}"\n\nThis MCP server is configured to search ${pipeline.metadata.chunksCount} chunks from "${pipeline.metadata.fileName}".\n\nTo enable actual search functionality, configure the following environment variables:\n- AZURE_OPENAI_API_KEY\n- AZURE_OPENAI_ENDPOINT\n- PINECONE_API_KEY\n- PINECONE_ENVIRONMENT\`
-        }
+        { type: 'text', text: answer },
+        { type: 'text', text: \`\n\nSources:\n\${sources.map((s,i)=>\`[\${i+1}] \${s.fileName}#\${s.chunkIndex}\`).join('\n')}\` }
       ]
     };
   } catch (error) {
@@ -205,10 +295,16 @@ AZURE_OPENAI_API_KEY=your_azure_openai_api_key
 AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/
 AZURE_OPENAI_DEPLOYMENT_EMBEDDING=text-embedding-ada-002
 AZURE_OPENAI_DEPLOYMENT_TURBO=gpt-35-turbo
+AZURE_OPENAI_DEPLOYMENT_GPT4=gpt-4
+AZURE_OPENAI_API_VERSION=2024-02-15-preview
 
 # Pinecone Configuration
 PINECONE_API_KEY=your_pinecone_api_key
 PINECONE_ENVIRONMENT=your_pinecone_environment
+PINECONE_INDEX_NAME=contexto-shared
+# or
+PINECONE_INDEX=contexto-shared
+PINECONE_NAMESPACE=
 
 # Cloudflare R2 Configuration (if using R2 for file storage)
 CF_R2_ACCESS_KEY_ID=your_r2_access_key

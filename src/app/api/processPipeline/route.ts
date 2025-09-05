@@ -373,7 +373,7 @@ async function processPipelineAsync(
     );
     console.log(`Generated ${embeddings.length} embeddings`);
     
-    // Store embeddings in vector database
+    // Store embeddings in vector database (use namespaces to partition data per user)
     console.log('Storing embeddings in vector database...');
     await pipelineRef.update({
       status: 'indexing',
@@ -387,6 +387,8 @@ async function processPipelineAsync(
     const indexName = await withTimeout('getOrCreateIndex', DEFAULT_STAGE_TIMEOUTS.index, async () =>
       retry('getOrCreateIndex', 2, async () => getOrCreateIndex(userId, pipelineId), 1000)
     );
+    // Namespace by user to keep data partitioned within a shared index
+    const namespace = userId.toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 45);
     
     // Convert chunks and embeddings to the format expected by upsertEmbeddings
     // createEmbeddings returns array of {embedding: number[]} objects
@@ -403,12 +405,14 @@ async function processPipelineAsync(
     
     const upStart = Date.now();
     await withTimeout('upsertEmbeddings', DEFAULT_STAGE_TIMEOUTS.index, async () =>
-      retry('upsertEmbeddings', 2, async () => upsertEmbeddings(indexName, records), 1500)
+      retry('upsertEmbeddings', 2, async () => upsertEmbeddings(indexName, records, namespace), 1500)
     );
     await pipelineRef.update({
       [`stageDurations.indexMs`]: Date.now() - idxStart,
       [`stageDurations.upsertMs`]: Date.now() - upStart,
       updatedAt: FieldValue.serverTimestamp(),
+      indexName,
+      namespace
     });
     
     // Generate tools if requested
@@ -520,12 +524,13 @@ async function processPipelineAsync(
     if (mcpId) {
       // Top-level path used by dashboard: mcps/{mcpId}
       try {
-        await adminDb.collection('mcps').doc(mcpId).update({
+        await adminDb.collection('mcps').doc(mcpId).set({
           status: 'complete',
           updatedAt: FieldValue.serverTimestamp(),
           ...(exportDownloadUrl ? { exportUrl: exportDownloadUrl } : {}),
-          indexName
-        });
+          indexName,
+          namespace
+        }, { merge: true });
       } catch (err) {
         console.error('Failed to update MCP completion status (top-level path mcps/{mcpId}):', err);
       }
@@ -537,12 +542,13 @@ async function processPipelineAsync(
           .doc(userId)
           .collection('user_mcps')
           .doc(mcpId)
-          .update({
+          .set({
             status: 'complete',
             updatedAt: FieldValue.serverTimestamp(),
             ...(exportDownloadUrl ? { exportUrl: exportDownloadUrl } : {}),
-            indexName
-          });
+            indexName,
+            namespace
+          }, { merge: true });
       } catch (err2) {
         console.warn('Nested MCP completion update skipped or failed (mcps/{userId}/user_mcps/{mcpId}) [non-fatal]:', err2);
       }
@@ -663,17 +669,17 @@ export async function POST(request: NextRequest) {
         console.error('Failed to update pipeline error status:', err);
       });
 
-      // Update MCP document with error status if available
+      // Update MCP document with error status if available (create if missing)
       if (mcpId) {
         // Top-level path
         adminDb
           .collection('mcps')
           .doc(mcpId)
-          .update({
+          .set({
             status: 'error',
             error: error instanceof Error ? error.message : String(error),
             updatedAt: FieldValue.serverTimestamp()
-          })
+          }, { merge: true })
           .catch((err: unknown) => {
             console.error('Failed to update MCP error status (top-level path mcps/{mcpId}):', err);
           });
@@ -684,11 +690,11 @@ export async function POST(request: NextRequest) {
           .doc(userId)
           .collection('user_mcps')
           .doc(mcpId)
-          .update({
+          .set({
             status: 'error',
             error: error instanceof Error ? error.message : String(error),
             updatedAt: FieldValue.serverTimestamp()
-          })
+          }, { merge: true })
           .catch((err: unknown) => {
             console.warn('Failed to update nested MCP error status (mcps/{userId}/user_mcps/{mcpId}) [non-fatal]:', err);
           });
