@@ -15,6 +15,60 @@ import { processFile } from '../../../lib/fileProcessor';
 import { exportMCPPipeline } from '../../../lib/mcpExporter';
 import { authenticateRequest } from '../../../lib/api-auth';
 
+// -------- Timeout/Retry Utilities --------
+const MAX_PIPELINE_DURATION_MS = 10 * 60 * 1000; // 10 minutes watchdog
+const DEFAULT_STAGE_TIMEOUTS = {
+  download: 2 * 60 * 1000, // 2 minutes
+  extract: 2 * 60 * 1000,
+  chunk: 2 * 60 * 1000,
+  embeddings: 5 * 60 * 1000, // can be slow
+  index: 3 * 60 * 1000,
+  export: 3 * 60 * 1000,
+} as const;
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function withTimeout<T>(label: string, ms: number, task: () => Promise<T>): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      task(),
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function retry<T>(label: string, attempts: number, task: () => Promise<T>, delayMs = 500, backoff = 2): Promise<T> {
+  let lastErr: unknown;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await task();
+    } catch (err) {
+      lastErr = err;
+      if (i < attempts - 1) {
+        const wait = delayMs * Math.pow(backoff, i);
+        console.warn(`[${label}] attempt ${i + 1}/${attempts} failed. Retrying in ${wait}ms...`, err);
+        await sleep(wait);
+      }
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error(`${label} failed after ${attempts} attempts`);
+}
+
+function ms(from: number) {
+  return `${Date.now() - from}ms`;
+}
+
 // Initialize Firebase Admin SDK at module load time
 // This ensures Firebase is ready before any requests are processed
 try {
@@ -58,7 +112,8 @@ const ProcessPipelineSchema = z.object({
     }))
   })).optional().default([]),
   autoGenerateTools: z.boolean().optional().default(false),
-  name: z.string().optional().default('')
+  name: z.string().optional().default(''),
+  mcpId: z.string().optional()
 });
 
 type ProcessPipelineRequest = {
@@ -67,6 +122,7 @@ type ProcessPipelineRequest = {
   tools?: Tool[];
   autoGenerateTools?: boolean;
   name?: string;
+  mcpId?: string;
 };
 
 /**
@@ -122,11 +178,13 @@ async function processDescriptionToChunks(description: string): Promise<Array<{
     // Convert description string to Buffer
     const buffer = Buffer.from(description, 'utf-8');
     // Process the description text into chunks
-    const chunks = await processFileToChunks(
-      buffer,
-      'text/plain',
-      'description.txt',
-      'description-' + uuidv4()
+    const chunks = await withTimeout('chunk:description', DEFAULT_STAGE_TIMEOUTS.chunk, async () =>
+      processFileToChunks(
+        buffer,
+        'text/plain',
+        'description.txt',
+        'description-' + uuidv4()
+      )
     );
     console.log(`Processed description into ${chunks.length} chunks`);
     return chunks;
@@ -151,8 +209,29 @@ async function processPipelineAsync(
   }>,
   description: string,
   tools: Tool[],
-  autoGenerateTools: boolean
+  autoGenerateTools: boolean,
+  mcpId?: string
 ): Promise<string> {
+  // Watchdog to forcibly fail the pipeline if it runs too long
+  let aborted = false;
+  const watchdogStart = Date.now();
+  const watchdog = setTimeout(async () => {
+    try {
+      aborted = true;
+      console.error(`Watchdog: Pipeline ${pipelineId} exceeded ${MAX_PIPELINE_DURATION_MS}ms. Marking as error.`);
+      const adminDb = initializeFirebaseAdmin();
+      const pipelineRef = adminDb.collection('pipelines').doc(pipelineId);
+      await pipelineRef.update({
+        status: 'error',
+        error: `Processing timed out after ${MAX_PIPELINE_DURATION_MS}ms`,
+        updatedAt: FieldValue.serverTimestamp(),
+        watchdogTriggeredAt: nowIso(),
+      });
+    } catch (e) {
+      console.warn('Watchdog failed to update Firestore (non-fatal):', e);
+    }
+  }, MAX_PIPELINE_DURATION_MS);
+
   try {
     console.log(`Starting pipeline processing for pipeline ${pipelineId}`);
     console.log(`User: ${userId}, Files: ${fileDataList.length}, Description length: ${description.length}`);
@@ -164,8 +243,13 @@ async function processPipelineAsync(
     // Update status to processing
     await pipelineRef.update({
       status: 'processing',
-      updatedAt: FieldValue.serverTimestamp()
+      stage: 'start',
+      updatedAt: FieldValue.serverTimestamp(),
+      startedAt: FieldValue.serverTimestamp(),
     });
+    
+    // Track export URL if generated
+    let exportDownloadUrl: string | undefined;
     
     // Process all files
     const allChunks: Array<{
@@ -182,32 +266,58 @@ async function processPipelineAsync(
     // Process description if provided
     if (description && description.trim() !== '') {
       console.log('Processing description text...');
+      const t0 = Date.now();
       const descriptionChunks = await processDescriptionToChunks(description);
       allChunks.push(...descriptionChunks);
-      
       await pipelineRef.update({
         descriptionChunksCount: descriptionChunks.length,
-        updatedAt: FieldValue.serverTimestamp()
+        [`stageDurations.descriptionMs`]: Date.now() - t0,
+        stage: 'description_chunked',
+        updatedAt: FieldValue.serverTimestamp(),
       });
     }
     
     // Process each file
     for (const fileData of fileDataList) {
       console.log(`Processing file: ${fileData.name} (${fileData.mimeType})`);
-      
+      if (aborted) throw new Error('Pipeline aborted by watchdog');
+
+      const fileStageBase = `files.${fileData.id}`;
+      const fileStart = Date.now();
       // Update status to show which file is being processed
       await pipelineRef.update({
         currentFile: fileData.name,
-        updatedAt: FieldValue.serverTimestamp()
+        stage: 'downloading',
+        updatedAt: FieldValue.serverTimestamp(),
       });
       
       // Download file from R2
       console.log(`Downloading file from R2: ${fileData.r2Key}`);
-      const fileBuffer = await downloadFileFromR2(fileData.r2Key);
+      const dlStart = Date.now();
+      const fileBuffer = await withTimeout(
+        `download ${fileData.name}`,
+        DEFAULT_STAGE_TIMEOUTS.download,
+        async () => retry(`download ${fileData.name}`, 3, async () => downloadFileFromR2(fileData.r2Key))
+      );
+      await pipelineRef.update({
+        [`${fileStageBase}.downloadMs`]: Date.now() - dlStart,
+        stage: 'extracting',
+        updatedAt: FieldValue.serverTimestamp(),
+      });
       
       // Extract text content
       console.log(`Extracting text from file: ${fileData.name}`);
-      const extractedText = await processFile(fileBuffer, fileData.mimeType, fileData.name);
+      const exStart = Date.now();
+      const extractedText = await withTimeout(
+        `extract ${fileData.name}`,
+        DEFAULT_STAGE_TIMEOUTS.extract,
+        async () => retry(`extract ${fileData.name}`, 2, async () => processFile(fileBuffer, fileData.mimeType, fileData.name))
+      );
+      await pipelineRef.update({
+        [`${fileStageBase}.extractMs`]: Date.now() - exStart,
+        stage: 'chunking',
+        updatedAt: FieldValue.serverTimestamp(),
+      });
       
       if (!extractedText || extractedText.trim() === '') {
         console.warn(`No text content extracted from file: ${fileData.name}`);
@@ -218,11 +328,18 @@ async function processPipelineAsync(
       
       // Process text into chunks
       const textBuffer = Buffer.from(extractedText, 'utf-8');
-      const fileChunks = await processFileToChunks(
-        textBuffer,
-        fileData.mimeType,
-        fileData.name,
-        fileData.id
+      // IMPORTANT: We've already extracted plain text above. When chunking, treat it as 'text/plain'
+      // to avoid attempting to re-parse the text as the original binary type (e.g., PDF), which can hang.
+      const chStart = Date.now();
+      const fileChunks = await withTimeout(
+        `chunk ${fileData.name}`,
+        DEFAULT_STAGE_TIMEOUTS.chunk,
+        async () => processFileToChunks(
+          textBuffer,
+          'text/plain',
+          fileData.name,
+          fileData.id
+        )
       );
       console.log(`Processed ${fileData.name} into ${fileChunks.length} chunks`);
       
@@ -232,7 +349,10 @@ async function processPipelineAsync(
       // Update progress in Firestore
       await pipelineRef.update({
         [`fileChunks.${fileData.id}`]: fileChunks.length,
-        updatedAt: FieldValue.serverTimestamp()
+        [`${fileStageBase}.chunkMs`]: Date.now() - chStart,
+        [`${fileStageBase}.totalMs`]: Date.now() - fileStart,
+        stage: 'file_done',
+        updatedAt: FieldValue.serverTimestamp(),
       });
     }
     
@@ -240,24 +360,33 @@ async function processPipelineAsync(
     console.log(`Generating embeddings for ${allChunks.length} chunks`);
     await pipelineRef.update({
       status: 'embedding',
+      stage: 'embeddings',
       chunksCount: allChunks.length,
       updatedAt: FieldValue.serverTimestamp()
     });
     
     // Extract text from chunks for embedding
     const chunkTexts = allChunks.map(chunk => chunk.text);
-    const embeddings = await createEmbeddings(chunkTexts, pipelineId);
+    const embStart = Date.now();
+    const embeddings = await withTimeout('embeddings', DEFAULT_STAGE_TIMEOUTS.embeddings, async () =>
+      retry('embeddings', 2, async () => createEmbeddings(chunkTexts, pipelineId), 1000)
+    );
     console.log(`Generated ${embeddings.length} embeddings`);
     
     // Store embeddings in vector database
     console.log('Storing embeddings in vector database...');
     await pipelineRef.update({
       status: 'indexing',
+      stage: 'indexing',
+      [`stageDurations.embeddingsMs`]: Date.now() - embStart,
       updatedAt: FieldValue.serverTimestamp()
     });
     
     // Ensure Pinecone index exists and is ready (unified naming via client)
-    const indexName = await getOrCreateIndex(userId, pipelineId);
+    const idxStart = Date.now();
+    const indexName = await withTimeout('getOrCreateIndex', DEFAULT_STAGE_TIMEOUTS.index, async () =>
+      retry('getOrCreateIndex', 2, async () => getOrCreateIndex(userId, pipelineId), 1000)
+    );
     
     // Convert chunks and embeddings to the format expected by upsertEmbeddings
     // createEmbeddings returns array of {embedding: number[]} objects
@@ -272,7 +401,15 @@ async function processPipelineAsync(
       }
     }));
     
-    await upsertEmbeddings(indexName, records);
+    const upStart = Date.now();
+    await withTimeout('upsertEmbeddings', DEFAULT_STAGE_TIMEOUTS.index, async () =>
+      retry('upsertEmbeddings', 2, async () => upsertEmbeddings(indexName, records), 1500)
+    );
+    await pipelineRef.update({
+      [`stageDurations.indexMs`]: Date.now() - idxStart,
+      [`stageDurations.upsertMs`]: Date.now() - upStart,
+      updatedAt: FieldValue.serverTimestamp(),
+    });
     
     // Generate tools if requested
     if (autoGenerateTools) {
@@ -281,6 +418,7 @@ async function processPipelineAsync(
       // For now, we'll just update the status
       await pipelineRef.update({
         status: 'generating_tools',
+        stage: 'generating_tools',
         updatedAt: FieldValue.serverTimestamp()
       });
       
@@ -293,6 +431,7 @@ async function processPipelineAsync(
       console.log('Exporting MCP pipeline...');
       await pipelineRef.update({
         status: 'exporting',
+        stage: 'exporting',
         updatedAt: FieldValue.serverTimestamp()
       });
       
@@ -354,12 +493,16 @@ async function processPipelineAsync(
       };
       
       // Export the pipeline
-      const downloadUrl = await exportMCPPipeline(pipelineData, userId);
+      const expStart = Date.now();
+      exportDownloadUrl = await withTimeout('exportMCPPipeline', DEFAULT_STAGE_TIMEOUTS.export, async () =>
+        retry('exportMCPPipeline', 2, async () => exportMCPPipeline(pipelineData, userId), 1000)
+      );
       
       // Update with export information
       await pipelineRef.update({
-        exportUrl: downloadUrl,
+        exportUrl: exportDownloadUrl,
         exportedAt: FieldValue.serverTimestamp(),
+        [`stageDurations.exportMs`]: Date.now() - expStart,
         updatedAt: FieldValue.serverTimestamp()
       });
     }
@@ -367,17 +510,52 @@ async function processPipelineAsync(
     // Update pipeline with completion status
     await pipelineRef.update({
       status: 'complete',
+      stage: 'complete',
       completedAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
       indexName
     });
     
-    console.log(`Pipeline ${pipelineId} processing complete`);
+    // Also update corresponding MCP document if provided
+    if (mcpId) {
+      // Top-level path used by dashboard: mcps/{mcpId}
+      try {
+        await adminDb.collection('mcps').doc(mcpId).update({
+          status: 'complete',
+          updatedAt: FieldValue.serverTimestamp(),
+          ...(exportDownloadUrl ? { exportUrl: exportDownloadUrl } : {}),
+          indexName
+        });
+      } catch (err) {
+        console.error('Failed to update MCP completion status (top-level path mcps/{mcpId}):', err);
+      }
+
+      // Legacy nested path (for compatibility): mcps/{userId}/user_mcps/{mcpId}
+      try {
+        await adminDb
+          .collection('mcps')
+          .doc(userId)
+          .collection('user_mcps')
+          .doc(mcpId)
+          .update({
+            status: 'complete',
+            updatedAt: FieldValue.serverTimestamp(),
+            ...(exportDownloadUrl ? { exportUrl: exportDownloadUrl } : {}),
+            indexName
+          });
+      } catch (err2) {
+        console.warn('Nested MCP completion update skipped or failed (mcps/{userId}/user_mcps/{mcpId}) [non-fatal]:', err2);
+      }
+    }
+    
+    console.log(`Pipeline ${pipelineId} processing complete in ${ms(watchdogStart)}`);
     return `Pipeline processing complete. Processed ${allChunks.length} chunks.`;
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     console.error(`Pipeline processing error: ${errorMessage}`);
     throw error;
+  } finally {
+    clearTimeout(watchdog);
   }
 }
 
@@ -406,7 +584,7 @@ export async function POST(request: NextRequest) {
       return errorResponse('Invalid request data: ' + validationResult.error.message, 400);
     }
     
-    const { fileIds, description, tools: rawTools = [], autoGenerateTools = false, name = '' } = validationResult.data;
+    const { fileIds, description, tools: rawTools = [], autoGenerateTools = false, name = '', mcpId } = validationResult.data;
     
     // Ensure tools array matches the Tool interface
     const tools: Tool[] = rawTools.map(tool => ({
@@ -433,6 +611,7 @@ export async function POST(request: NextRequest) {
       tools,
       autoGenerateTools,
       name,
+      mcpId,
       status: 'processing',
       createdAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
@@ -469,7 +648,8 @@ export async function POST(request: NextRequest) {
       fileDataList,
       description,
       tools,
-      autoGenerateTools
+      autoGenerateTools,
+      mcpId
     ).catch((error: unknown) => {
       console.error('Pipeline processing error:', error);
       console.error(`Pipeline ${pipelineId} failed:`, error);
@@ -482,6 +662,37 @@ export async function POST(request: NextRequest) {
       }).catch((err: unknown) => {
         console.error('Failed to update pipeline error status:', err);
       });
+
+      // Update MCP document with error status if available
+      if (mcpId) {
+        // Top-level path
+        adminDb
+          .collection('mcps')
+          .doc(mcpId)
+          .update({
+            status: 'error',
+            error: error instanceof Error ? error.message : String(error),
+            updatedAt: FieldValue.serverTimestamp()
+          })
+          .catch((err: unknown) => {
+            console.error('Failed to update MCP error status (top-level path mcps/{mcpId}):', err);
+          });
+
+        // Legacy nested path
+        adminDb
+          .collection('mcps')
+          .doc(userId)
+          .collection('user_mcps')
+          .doc(mcpId)
+          .update({
+            status: 'error',
+            error: error instanceof Error ? error.message : String(error),
+            updatedAt: FieldValue.serverTimestamp()
+          })
+          .catch((err: unknown) => {
+            console.warn('Failed to update nested MCP error status (mcps/{userId}/user_mcps/{mcpId}) [non-fatal]:', err);
+          });
+      }
     });
     
     // Return immediate response with pipeline ID

@@ -1,7 +1,7 @@
+import 'server-only';
 import * as mammoth from 'mammoth';
 // Import the core module to avoid index.js debug harness that reads a test PDF
 // @ts-ignore - CJS interop, types are not provided
-import pdfParse from 'pdf-parse/lib/pdf-parse.js';
 // @ts-ignore - Tesseract.js has incomplete type definitions
 import * as Tesseract from 'tesseract.js';
 
@@ -48,8 +48,13 @@ export async function extractTextFromFile(
         return JSON.stringify(jsonData, null, 2);
       
       case 'application/pdf':
-        const pdfData = await pdfParse(buffer);
-        return pdfData.text;
+        {
+          // Dynamically import to prevent bundling at build time
+          const pdfModule: any = await import('pdf-parse/lib/pdf-parse.js');
+          const pdfFn = pdfModule?.default ?? pdfModule;
+          const pdfData = await pdfFn(buffer);
+          return pdfData.text;
+        }
       
       case 'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
         const docxResult = await mammoth.extractRawText({ buffer });

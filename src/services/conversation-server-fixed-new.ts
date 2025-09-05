@@ -200,9 +200,8 @@ export class ConversationServerService {
   async createSession(userId: string): Promise<ConversationSession> {
     const sessionData: Omit<ConversationSession, 'id'> = {
       userId,
-      step: 'welcome',
-      isActive: true,
-      isComplete: false,
+      status: 'active',
+      currentStep: 'welcome',
       messages: [],
       collectedData: {
         dataSource: { type: 'text', location: '' },
@@ -247,11 +246,10 @@ export class ConversationServerService {
     return {
       id: doc.id,
       userId: data?.userId,
-      step: data?.step,
-      isActive: data?.isActive,
-      isComplete: data?.isComplete,
+      status: data?.status,
+      currentStep: data?.currentStep,
       messages: data?.messages || [],
-      collectedData: data?.collectedData,
+      collectedData: data?.collectedData || {},
       createdAt: data?.createdAt.toDate(),
       updatedAt: data?.updatedAt.toDate()
     };
@@ -265,8 +263,8 @@ export class ConversationServerService {
     const sessionsRef = firestore.collection('conversations');
     const snapshot = await sessionsRef
       .where('userId', '==', userId)
-      .where('isActive', '==', true)
-      .orderBy('createdAt', 'desc')
+      .where('status', '==', 'active')
+      .orderBy('updatedAt', 'desc')
       .limit(1)
       .get();
     
@@ -280,11 +278,10 @@ export class ConversationServerService {
     return {
       id: doc.id,
       userId: data.userId,
-      step: data.step,
-      isActive: data.isActive,
-      isComplete: data.isComplete,
+      status: data.status,
+      currentStep: data.currentStep,
       messages: data.messages || [],
-      collectedData: data.collectedData,
+      collectedData: data.collectedData || {},
       createdAt: data.createdAt.toDate(),
       updatedAt: data.updatedAt.toDate()
     };
@@ -332,11 +329,11 @@ export class ConversationServerService {
       return { nextQuestion: '', isComplete: false, error: 'Session not found' };
     }
     
-    if (session.isComplete) {
+    if (session.status && session.status !== 'active') {
       return { nextQuestion: '', isComplete: true };
     }
     
-    const currentStep = session.step;
+    const currentStep = session.currentStep;
     const stepConfig = this.getStepConfig(currentStep);
     
     // Validate user input
@@ -388,7 +385,7 @@ export class ConversationServerService {
   ): Promise<void> {
     const firestore = await this.db;
     await firestore.collection('conversations').doc(sessionId).update({
-      step,
+      currentStep: step,
       collectedData,
       updatedAt: Timestamp.fromDate(new Date())
     });
@@ -401,7 +398,7 @@ export class ConversationServerService {
     session: ConversationSession, 
     parsedValue: any
   ): Promise<PipelineConfig> {
-    const currentStep = session.step;
+    const currentStep = session.currentStep;
     const data = { ...session.collectedData };
     
     switch (currentStep) {
@@ -458,12 +455,12 @@ export class ConversationServerService {
     return `
 Here's a summary of your MCP pipeline:
 
-Data Source: ${config.dataSource.type.toUpperCase()}
-Chunking: ${config.chunking.size} tokens with ${config.chunking.overlap} overlap
-Embedding: ${config.embedding.model} (${config.embedding.provider})
-Vector Store: ${config.indexing.backend}
-Retrieval: Top-${config.retrieval.topK} ${config.retrieval.searchType} search
-RAG Model: ${config.rag.model}
+Data Source: ${config.dataSource?.type?.toUpperCase() || 'TEXT'}
+Chunking: ${config.chunking?.size ?? 'N/A'} tokens with ${config.chunking?.overlap ?? 0} overlap
+Embedding: ${config.embedding?.model || 'N/A'} (${config.embedding?.provider || 'openai'})
+Vector Store: ${config.indexing?.backend || 'firestore'}
+Retrieval: Top-${config.retrieval?.topK ?? 5} ${config.retrieval?.searchType || 'semantic'} search
+RAG Model: ${config.rag?.model || 'gpt-4'}
 
 Does this look correct? Type 'yes' to export, or 'no' to start over.
     `.trim();
@@ -475,8 +472,7 @@ Does this look correct? Type 'yes' to export, or 'no' to start over.
   async completeSession(sessionId: string): Promise<void> {
     const firestore = await this.db;
     await firestore.collection('conversations').doc(sessionId).update({
-      isComplete: true,
-      isActive: false,
+      status: 'completed',
       updatedAt: Timestamp.fromDate(new Date())
     });
   }

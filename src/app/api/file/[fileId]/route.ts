@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 import { initializeFirebaseAdmin } from '@/lib/firebase-admin-init';
 import { authenticateRequest } from '@/lib/api-auth';
 import { r2, R2_BUCKET } from '@/lib/r2';
@@ -33,12 +33,11 @@ async function streamToBuffer(stream: Readable): Promise<Buffer> {
 }
 
 export async function GET(
-  request: NextRequest,
-  context: { params: { fileId: string } }
+  request: Request,
+  { params }: any
 ) {
   try {
-    // Get file ID from URL params (properly awaited to fix Next.js warning)
-    const params = await context.params;
+    // Get file ID from URL params
     const fileId = params.fileId;
     if (!fileId) {
       return NextResponse.json({ message: 'File ID is required' }, { status: 400 });
@@ -47,7 +46,7 @@ export async function GET(
     console.log(`File request for ID: ${fileId}`);
     
     // Check if this is a direct file download request
-    const isDownload = request.nextUrl.searchParams.has('download');
+    const isDownload = new URL(request.url).searchParams.has('download');
     
     // Authenticate request
     const auth = await authenticateRequest(request);
@@ -180,12 +179,11 @@ export async function GET(
 }
 
 export async function DELETE(
-  request: NextRequest,
-  context: { params: { fileId: string } }
+  request: Request,
+  { params }: any
 ) {
   try {
-    // Get file ID from URL params (properly awaited to fix Next.js warning)
-    const params = await context.params;
+    // Get file ID from URL params
     const fileId = params.fileId;
     if (!fileId) {
       return NextResponse.json({ message: 'File ID is required' }, { status: 400 });

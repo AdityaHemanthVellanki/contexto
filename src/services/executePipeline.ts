@@ -84,12 +84,11 @@ export async function executePipeline(
       }
     }));
 
-    await vectorIndex.upsert({
-      upsertRequest: {
-        vectors,
-        namespace: fileId,
-      }
-    });
+    // Pinecone SDK v6: use namespace scoping with direct vector array
+    // Some versions' type definitions omit 'namespace', so cast to any for that call
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const nsIndex: any = (vectorIndex as any).namespace(fileId);
+    await nsIndex.upsert(vectors as any);
     console.timeEnd('indexer');
     console.log('Embeddings indexed successfully');
 
@@ -101,11 +100,14 @@ export async function executePipeline(
     const questionEmbedding = questionEmbeddings[0];
     
     const retrieverIndex = getPineconeIndex();
-    const queryResponse = await retrieverIndex.query({
+    // Pinecone SDK v6: query within namespace using namespaced accessor
+    // Some versions' type definitions omit 'namespace', so cast to any for that call
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const nsRetriever: any = (retrieverIndex as any).namespace(fileId);
+    const queryResponse = await nsRetriever.query({
       vector: questionEmbedding,
       topK: 5,
       includeMetadata: true,
-      namespace: fileId,
     });
     
     const topChunks = queryResponse.matches?.map((match: any) => match.metadata?.content || '') || [];

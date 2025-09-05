@@ -1,4 +1,4 @@
-import { NextRequest } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { withAuth, errorResponse, successResponse } from '@/lib/api-middleware';
 import { doc, getDoc, updateDoc, deleteDoc, collection, getDocs, query, orderBy } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
@@ -13,7 +13,7 @@ const UpdateChatSchema = z.object({
 /**
  * GET /api/chat/[chatId] - Get chat details and messages
  */
-export const GET = withAuth(async (req, context) => {
+export const GET = withAuth<{ chatId: string }>(async (req, context) => {
   const { chatId } = context?.params || {};
   
   if (!chatId) {
@@ -58,7 +58,7 @@ export const GET = withAuth(async (req, context) => {
 /**
  * PATCH /api/chat/[chatId] - Update chat metadata
  */
-export const PATCH = withAuth(async (req, context) => {
+export const PATCH = withAuth<{ chatId: string }>(async (req, context) => {
   const { chatId } = context?.params || {};
   
   if (!chatId) {
@@ -100,7 +100,7 @@ export const PATCH = withAuth(async (req, context) => {
 /**
  * DELETE /api/chat/[chatId] - Delete chat and all messages
  */
-export const DELETE = withAuth(async (req, context) => {
+export const DELETE = withAuth<{ chatId: string }>(async (req, context) => {
   const { chatId } = context?.params || {};
   
   if (!chatId) {

@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { initializeFirebaseAdmin } from '@/lib/firebase-admin-init';
 
@@ -34,6 +34,25 @@ function getVectorStore(sizeBytes: number, purpose: string): { type: string; pri
   } else {
     return { type: 'firestore', priority: 4 }; // Good for simple use cases and small datasets
   }
+}
+
+// Configuration helpers
+async function getQdrantConfig(): Promise<{ url: string; apiKey?: string }> {
+  const url = process.env.QDRANT_URL;
+  const apiKey = process.env.QDRANT_API_KEY;
+  if (!url) {
+    throw new Error('Qdrant URL not configured');
+  }
+  return { url, apiKey };
+}
+
+async function getSupabaseConfig(): Promise<{ url: string; serviceKey: string }> {
+  const url = process.env.SUPABASE_URL;
+  const serviceKey = process.env.SUPABASE_SERVICE_KEY;
+  if (!url || !serviceKey) {
+    throw new Error('Supabase configuration not set (SUPABASE_URL, SUPABASE_SERVICE_KEY)');
+  }
+  return { url, serviceKey };
 }
 
 // Pinecone index creation
@@ -96,21 +115,28 @@ async function createPineconeIndex(pipelineId: string): Promise<string> {
 // Qdrant collection creation
 async function createQdrantCollection(pipelineId: string): Promise<string> {
   const { apiKey, url } = await getQdrantConfig();
-  
-  const client = new QdrantClient({
-    url,
-    apiKey,
-  });
-
   const collectionName = `contexto-${pipelineId}`.toLowerCase().replace(/[^a-z0-9-]/g, '-');
-  
+
   try {
-    await client.createCollection(collectionName, {
-      vectors: {
-        size: 1536, // OpenAI embedding dimension
-        distance: 'Cosine',
+    // Use Qdrant REST API to create a collection
+    const createResponse = await fetch(`${url}/collections/${collectionName}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(apiKey ? { 'api-key': apiKey } : {}),
       },
+      body: JSON.stringify({
+        vectors: {
+          size: 1536, // OpenAI embedding dimension
+          distance: 'Cosine',
+        },
+      }),
     });
+
+    if (!createResponse.ok && createResponse.status !== 409) { // 409 = already exists
+      const errorText = await createResponse.text();
+      throw new Error(`Qdrant collection creation failed: ${errorText}`);
+    }
 
     return `${url}/collections/${collectionName}`;
   } catch (error) {
@@ -122,8 +148,6 @@ async function createQdrantCollection(pipelineId: string): Promise<string> {
 // Supabase table creation
 async function createSupabaseTable(pipelineId: string): Promise<string> {
   const { url, serviceKey } = await getSupabaseConfig();
-  
-  const supabase = createClient(url, serviceKey);
   
   const tableName = `contexto_${pipelineId}`.toLowerCase().replace(/[^a-z0-9_]/g, '_');
   
@@ -186,7 +210,7 @@ async function createFirestoreCollection(pipelineId: string): Promise<string> {
   }
 }
 
-export async function POST(request: NextRequest) {
+export async function POST(request: Request) {
   try {
     // Apply rate limiting
     const rateLimitResult = await rateLimit(request, {

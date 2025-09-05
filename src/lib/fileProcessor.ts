@@ -107,21 +107,18 @@ async function processPDF(buffer: Buffer): Promise<string> {
       await fs.mkdir(tempDir, { recursive: true });
       console.log(`Created temporary directory for PDF processing: ${tempDir}`);
       
-      // Process PDF directly without changing working directory
-      const originalCwd = process.cwd();
-      
-      // Process using direct approach
+      // Process using direct approach with dynamic import of core module
       try {
-        const pdfParse = await import('pdf-parse');
+        const pdfModule: any = await import('pdf-parse/lib/pdf-parse.js');
+        const pdfFn = pdfModule?.default ?? pdfModule;
         
         // Process PDF with basic options
         const options = {
-          max: 0, // No page limit
-          version: 'default'
+          max: 0 // No page limit
         };
         
-        console.log('Parsing PDF with direct file reference');
-        const result = await pdfParse.default(buffer, options);
+        console.log('Parsing PDF with core pdf-parse module');
+        const result = await pdfFn(buffer, options);
         
         if (result && result.text) {
           console.log(`Successfully extracted ${result.text.length} characters from PDF`);
@@ -135,12 +132,6 @@ async function processPDF(buffer: Buffer): Promise<string> {
         throw primaryError;
       }
     } finally {
-      // Restore original working directory if it was changed
-      if (originalCwd) {
-        process.chdir(originalCwd);
-        console.log('Restored original working directory');
-      }
-      
       // Always clean up the temporary directory
       try {
         await fs.rm(tempDir, { recursive: true, force: true });

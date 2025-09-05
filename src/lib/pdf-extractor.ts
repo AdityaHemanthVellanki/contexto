@@ -1,3 +1,4 @@
+import 'server-only';
 /**
  * PDF text extraction utilities that work in Node.js environment
  * PDF text extractor

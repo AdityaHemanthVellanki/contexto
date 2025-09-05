@@ -166,6 +166,7 @@ declare global {
  */
 export function getServerEnv(): ServerEnv {
   return {
+    NODE_ENV: (process.env.NODE_ENV as 'development' | 'production' | 'test') || 'development',
     OPENAI_API_KEY: process.env.OPENAI_API_KEY || '',
     AZURE_OPENAI_API_KEY: process.env.AZURE_OPENAI_API_KEY || '',
     AZURE_OPENAI_ENDPOINT: process.env.AZURE_OPENAI_ENDPOINT || '',

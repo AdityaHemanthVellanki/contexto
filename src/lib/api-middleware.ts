@@ -8,13 +8,14 @@ export interface AuthenticatedRequest extends NextRequest {
 /**
  * Middleware to authenticate API requests using Firebase ID tokens
  */
-export async function withAuth<T = any>(
-  handler: (req: AuthenticatedRequest, context?: { params: T }) => Promise<NextResponse>
+export function withAuth<T = any>(
+  handler: (req: AuthenticatedRequest, context: { params: T }) => Promise<NextResponse>
 ) {
-  return async (req: NextRequest, context?: { params: T }) => {
+  // Note: we intentionally keep the returned handler's signature broad to satisfy Next.js Route types
+  return async (req: Request, context: any) => {
     try {
       // Extract token from Authorization header
-      const authHeader = req.headers.get('authorization');
+      const authHeader = (req as any).headers?.get?.('authorization');
       if (!authHeader || !authHeader.startsWith('Bearer ')) {
         return NextResponse.json(
           { error: 'Missing or invalid authorization header' },
@@ -28,11 +29,14 @@ export async function withAuth<T = any>(
       const decodedToken = await verifyIdToken(token);
       
       // Add userId to request object
-      const authenticatedReq = req as AuthenticatedRequest;
+      const authenticatedReq = req as unknown as AuthenticatedRequest;
       authenticatedReq.userId = decodedToken.uid;
       
       // Call the handler with authenticated request and context
-      return await handler(authenticatedReq, context);
+      return await handler(
+        authenticatedReq,
+        (context as { params: T }) ?? ({ params: {} as T } as { params: T })
+      );
     } catch (error) {
       console.error('Authentication error:', error);
       return NextResponse.json(

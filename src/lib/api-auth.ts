@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 import { getFirebaseAuth } from './firebase-admin-init';
 import type { DecodedIdToken } from 'firebase-admin/auth';
 
@@ -6,7 +6,7 @@ import type { DecodedIdToken } from 'firebase-admin/auth';
  * Helper function to authenticate and authorize API requests
  * Works in both development and production environments
  */
-export async function authenticateRequest(request: NextRequest): Promise<{
+export async function authenticateRequest(request: Request): Promise<{
   authenticated: boolean;
   userId?: string;
   token?: string;

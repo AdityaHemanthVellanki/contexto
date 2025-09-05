@@ -19,8 +19,8 @@ try {
 }
 
 export async function GET(
-  request: NextRequest,
-  { params }: { params: { exportId: string } }
+  request: Request,
+  { params }: any
 ) {
   const { exportId } = params;
   

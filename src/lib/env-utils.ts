@@ -6,7 +6,8 @@ const serverEnvSchema = z.object({
   FIREBASE_PROJECT_ID: z.string().min(1, 'Firebase Project ID is required'),
   FIREBASE_CLIENT_EMAIL: z.string().min(1, 'Firebase Client Email is required'),
   FIREBASE_PRIVATE_KEY: z.string().min(1, 'Firebase Private Key is required'),
-  FIREBASE_STORAGE_BUCKET: z.string().min(1, 'Firebase Storage Bucket is required'),
+  // Optional: Storage bucket may be omitted in some environments; admin SDK can work without it
+  FIREBASE_STORAGE_BUCKET: z.string().optional(),
   FIREBASE_ADMIN_CREDENTIALS: z.string().optional(),
   FIREBASE_SERVICE_ACCOUNT_KEY: z.string().optional(),
   
@@ -44,7 +45,7 @@ export const getServerEnv = (): ServerEnv => {
     FIREBASE_PROJECT_ID: string;
     FIREBASE_CLIENT_EMAIL: string;
     FIREBASE_PRIVATE_KEY: string;
-    FIREBASE_STORAGE_BUCKET: string;
+    FIREBASE_STORAGE_BUCKET?: string;
     
     // Optional Firebase Admin
     FIREBASE_ADMIN_CREDENTIALS?: string;
@@ -69,14 +70,14 @@ export const getServerEnv = (): ServerEnv => {
   };
 
   // Parse and validate environment variables
-  const parsed = serverEnvSchema.safeParse(env);
+  const parsed = serverEnvSchema.safeParse(processedEnv);
 
   if (!parsed.success) {
     const errorMessage = parsed.error.issues
       .map((issue) => `- ${issue.path.join('.')}: ${issue.message}`)
-      .join('\\n');
+      .join('\n');
     
-    throw new Error(`Invalid environment variables:\\n${errorMessage}`);
+    throw new Error(`Invalid environment variables:\n${errorMessage}`);
   }
 
   // Create the final environment object with proper typing

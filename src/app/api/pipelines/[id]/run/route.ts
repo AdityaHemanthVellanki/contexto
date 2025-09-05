@@ -1,11 +1,11 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 import { verifyIdToken } from '@/lib/auth';
 import { db } from '@/lib/firebase';
 import { doc, getDoc } from 'firebase/firestore';
 import { executePipeline } from '@/services/executePipeline';
 
 // Helper function to authenticate requests
-async function authenticateRequest(request: NextRequest) {
+async function authenticateRequest(request: Request) {
   try {
     const authHeader = request.headers.get('authorization');
     
@@ -24,7 +24,7 @@ async function authenticateRequest(request: NextRequest) {
 }
 
 // POST handler for running a pipeline
-export async function POST(request: NextRequest, { params }: { params: { id: string } }) {
+export async function POST(request: Request, { params }: any) {
   const pipelineId = params.id;
   const authResult = await authenticateRequest(request);
   

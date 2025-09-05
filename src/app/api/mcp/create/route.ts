@@ -32,6 +32,7 @@ interface MCPMetadata {
   embeddingModel: string;
   vectorIndexName?: string;
   error?: string;
+  userId: string;
   fileMetadata?: {
     fileType: string;
     fileSize: number;
@@ -95,12 +96,22 @@ export const POST = withAuth(async (req) => {
       status: 'processing',
       uploadUrl: `r2://contexto/mcp_uploads/${req.userId}/${mcpId}/${fileName}`,
       createdAt: serverTimestamp(),
-      embeddingModel: 'text-embedding-3-small'
+      embeddingModel: 'text-embedding-3-small',
+      userId: req.userId
     };
 
     const mcpRef = doc(db, 'mcps', req.userId, 'user_mcps', mcpId);
     await setDoc(mcpRef, mcpMetadata);
-    logger.info('MCP metadata created in Firestore');
+    logger.info('MCP metadata created in Firestore (nested path)');
+
+    // Mirror to top-level path for dashboard listeners
+    try {
+      const mcpTopRef = doc(db, 'mcps', mcpId);
+      await setDoc(mcpTopRef, mcpMetadata);
+      logger.info('MCP metadata mirrored to top-level path mcps/{mcpId}');
+    } catch (mirrorErr) {
+      logger.stageError('Failed to mirror MCP metadata to top-level path', mirrorErr as Error);
+    }
 
     // Start async processing
     processMCPAsync(req.userId, mcpId, r2Key, fileName, title || fileName, description);
@@ -123,6 +134,17 @@ export const POST = withAuth(async (req) => {
           error: error instanceof Error ? error.message : 'Unknown error',
           processedAt: serverTimestamp()
         });
+        // Mirror error to top-level doc
+        try {
+          const mcpTopRef = doc(db, 'mcps', mcpId);
+          await updateDoc(mcpTopRef, {
+            status: 'error',
+            error: error instanceof Error ? error.message : 'Unknown error',
+            processedAt: serverTimestamp()
+          });
+        } catch (mirrorErr) {
+          logger.stageError('Failed to mirror MCP error status to top-level path', mirrorErr as Error);
+        }
       } catch (updateError) {
         logger.stageError('Failed to update MCP error status', updateError as Error);
       }
@@ -145,6 +167,31 @@ async function processMCPAsync(
 ) {
   const log = new PipelineLogger(`MCP_${mcpId.substring(0, 8)}`);
   const startTime = Date.now();
+  // Watchdog to prevent indefinite processing states
+  const MAX_MCP_DURATION_MS = 10 * 60 * 1000; // 10 minutes
+  const watchdog = setTimeout(async () => {
+    try {
+      log.stageError('Watchdog timeout reached for MCP creation', new Error(`Timed out after ${MAX_MCP_DURATION_MS}ms`));
+      const mcpRef = doc(db, 'mcps', userId, 'user_mcps', mcpId);
+      await updateDoc(mcpRef, {
+        status: 'error',
+        error: `Processing timed out after ${MAX_MCP_DURATION_MS}ms`,
+        processedAt: serverTimestamp()
+      });
+      try {
+        const mcpTopRef = doc(db, 'mcps', mcpId);
+        await updateDoc(mcpTopRef, {
+          status: 'error',
+          error: `Processing timed out after ${MAX_MCP_DURATION_MS}ms`,
+          processedAt: serverTimestamp()
+        });
+      } catch (mirrorErr) {
+        log.stageError('Failed to mirror MCP timeout status to top-level path', mirrorErr as Error);
+      }
+    } catch (e) {
+      log.stageError('Failed to set MCP timeout error status', e as Error);
+    }
+  }, MAX_MCP_DURATION_MS);
   
   try {
     log.stageHeader('MCP SERVER CREATION PIPELINE');
@@ -256,6 +303,29 @@ async function processMCPAsync(
       }
     });
 
+    // Mirror completion to top-level doc
+    try {
+      const mcpTopRef = doc(db, 'mcps', mcpId);
+      await updateDoc(mcpTopRef, {
+        status: 'complete',
+        processedAt: serverTimestamp(),
+        numChunks: chunkResult.chunks.length,
+        vectorIndexName: `mcp-${mcpId}`,
+        fileMetadata,
+        chunkingStats,
+        embeddingStats: {
+          model: 'text-embedding-3-small',
+          totalTokens: embeddingResult.totalTokens,
+          averageTokensPerChunk: embeddingResult.averageTokensPerChunk,
+          processingTime: embeddingResult.totalProcessingTime,
+          estimatedCost: (embeddingResult.totalTokens / 1000) * 0.00002
+        }
+      });
+      log.info('Mirrored MCP completion to top-level path mcps/{mcpId}');
+    } catch (mirrorErr) {
+      log.stageError('Failed to mirror MCP completion to top-level path', mirrorErr as Error);
+    }
+
     await logToFirestore(userId, mcpId, 'complete', {
       message: `💬 MCP server ready for queries`,
       totalProcessingTime,
@@ -293,9 +363,23 @@ async function processMCPAsync(
         error: error instanceof Error ? error.message : 'Unknown processing error',
         processedAt: serverTimestamp()
       });
+
+      // Mirror error to top-level doc
+      try {
+        const mcpTopRef = doc(db, 'mcps', mcpId);
+        await updateDoc(mcpTopRef, {
+          status: 'error',
+          error: error instanceof Error ? error.message : 'Unknown processing error',
+          processedAt: serverTimestamp()
+        });
+      } catch (mirrorErr) {
+        log.stageError('Failed to mirror MCP error status to top-level path', mirrorErr as Error);
+      }
     } catch (updateError) {
       log.stageError('Failed to update MCP error status', updateError as Error);
     }
+  } finally {
+    clearTimeout(watchdog);
   }
 }
 

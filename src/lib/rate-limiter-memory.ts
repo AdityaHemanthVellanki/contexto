@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 
 /**
  * Interface for rate limit options
@@ -6,7 +6,7 @@ import { NextRequest, NextResponse } from 'next/server';
 export interface RateLimitOptions {
   limit: number;
   windowSizeInSeconds: number;
-  identifierFn?: (req: NextRequest) => string;
+  identifierFn?: (req: Request) => string;
 }
 
 /**
@@ -40,15 +40,35 @@ setInterval(() => {
   }
 }, 60000); // Clean up every minute
 
+function getClientIp(req: Request): string {
+  const xfwd = req.headers.get('x-forwarded-for') || '';
+  const real = req.headers.get('x-real-ip') || '';
+  const ip = (xfwd.split(',')[0] || real || '').trim();
+  return ip || 'unknown';
+}
+
 /**
  * In-memory rate limiting middleware for Next.js API routes
  * Warning: This is suitable for low-traffic applications or development.
  * For high-traffic production environments, consider a distributed solution.
  */
 export async function rateLimit(
-  identifier: string,
+  identifierOrReq: string | Request,
   options: { limit: number; windowSizeInSeconds: number } = { limit: 60, windowSizeInSeconds: 60 }
 ): Promise<RateLimitResult> {
+  // Derive identifier from Request if needed
+  const identifier = typeof identifierOrReq === 'string'
+    ? identifierOrReq
+    : (() => {
+        try {
+          const req = identifierOrReq as Request;
+          const url = new URL(req.url);
+          const ip = getClientIp(req);
+          return `${req.method}:${url.pathname}:ip:${ip}`;
+        } catch {
+          return 'unknown';
+        }
+      })();
   // Validate and coerce values to safe defaults
   const rawLimit = options?.limit;
   const rawWindow = options?.windowSizeInSeconds;

@@ -1,8 +1,7 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 import { authenticateRequest } from '@/lib/api-auth';
 import { rateLimit } from '@/lib/rate-limiter-memory';
 import { initializeFirebaseAdmin } from '@/lib/firebase-admin-init';
-import { getFirebaseAuth } from '@/lib/firebase-admin-init';
 import { FieldValue } from 'firebase-admin/firestore';
 
 // Initialize Firebase Admin SDK at module load time
@@ -23,13 +22,18 @@ interface RouteParams {
   };
 }
 
-export async function PATCH(request: NextRequest, { params }: RouteParams) {
+function getClientIp(req: Request): string {
+  const xfwd = req.headers.get('x-forwarded-for') || '';
+  const real = req.headers.get('x-real-ip') || '';
+  const ip = (xfwd.split(',')[0] || real || '').trim();
+  return ip || 'unknown';
+}
+
+export async function PATCH(request: Request, { params }: any) {
   try {
-    // Apply rate limiting
-    const rateLimitResult = await rateLimit(request, {
-      limit: 10,
-      windowSizeInSeconds: 60
-    });
+    // Apply rate limiting using client IP and chat ID as identifier
+    const identifier = `chats:patch:${params.chatId}:ip:${getClientIp(request)}`;
+    const rateLimitResult = await rateLimit(identifier, { limit: 10, windowSizeInSeconds: 60 });
     
     if (rateLimitResult.limited) {
       return rateLimitResult.response || NextResponse.json(
@@ -95,13 +99,11 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
   }
 }
 
-export async function DELETE(request: NextRequest, { params }: RouteParams) {
+export async function DELETE(request: Request, { params }: any) {
   try {
-    // Apply rate limiting
-    const rateLimitResult = await rateLimit(request, {
-      limit: 10,
-      windowSizeInSeconds: 60
-    });
+    // Apply rate limiting using client IP and chat ID as identifier
+    const identifier = `chats:delete:${params.chatId}:ip:${getClientIp(request)}`;
+    const rateLimitResult = await rateLimit(identifier, { limit: 10, windowSizeInSeconds: 60 });
     
     if (rateLimitResult.limited) {
       return rateLimitResult.response || NextResponse.json(

@@ -364,7 +364,7 @@ async function verifyHerokuDeployment(appUrl: string): Promise<{ verified: boole
 }
 
 // Get vector store specific configuration
-export function getVectorStoreApiKey(storeType: string): string {
+function getVectorStoreApiKey(storeType: string): string {
   switch (storeType) {
     case 'pinecone':
       return process.env.PINECONE_API_KEY || '';
@@ -380,7 +380,7 @@ export function getVectorStoreApiKey(storeType: string): string {
 }
 
 // Get store-specific configuration
-export function getStoreSpecificConfig(storeType: string, pipelineId: string, userId: string): any {
+function getStoreSpecificConfig(storeType: string, pipelineId: string, userId: string): any {
   switch (storeType) {
     case 'pinecone':
       return {
@@ -406,7 +406,7 @@ export function getStoreSpecificConfig(storeType: string, pipelineId: string, us
 }
 
 // Generate embedding function
-export function generateEmbedding(text: string): Promise<number[]> {
+function generateEmbedding(text: string): Promise<number[]> {
   // Implementation would go here
   // This is a placeholder that would be replaced with actual embedding generation
   return Promise.resolve([]);

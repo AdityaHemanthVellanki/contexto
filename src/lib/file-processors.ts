@@ -1,4 +1,4 @@
-import pdf from 'pdf-parse';
+import 'server-only';
 import mammoth from 'mammoth';
 import { JSDOM } from 'jsdom';
 import { PipelineLogger } from './utils/pipeline-logger';
@@ -97,10 +97,14 @@ export class FileProcessor {
     this.logger.stageProgress('Extracting text from PDF...');
     
     try {
-      const pdfData = await pdf(fileBuffer, {
+      // Dynamically import the core pdf-parse implementation to avoid bundling test assets at build time
+      // Some versions of pdf-parse can reference test data when statically imported during bundling
+      const pdfModule: any = await import('pdf-parse/lib/pdf-parse.js');
+      const pdfFn = pdfModule?.default ?? pdfModule;
+
+      const pdfData = await pdfFn(fileBuffer, {
         // PDF parsing options
-        max: 0, // Parse all pages
-        version: 'v1.10.100'
+        max: 0 // Parse all pages
       });
 
       this.logger.info(`PDF parsed: ${pdfData.numpages} pages`);

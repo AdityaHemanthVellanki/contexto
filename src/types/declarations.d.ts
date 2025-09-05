@@ -87,6 +87,16 @@ declare module 'pdf-parse' {
   export = pdfParse;
 }
 
+// Support dynamic import of the internal pdf-parse implementation used to avoid build-time test asset references
+declare module 'pdf-parse/lib/pdf-parse.js' {
+  function pdfParse(dataBuffer: Buffer, options?: any): Promise<{
+    text: string;
+    numpages: number;
+    info: Record<string, any>;
+  }>;
+  export = pdfParse;
+}
+
 declare module 'mammoth' {
   export function extractRawText(options: {
     path?: string;
