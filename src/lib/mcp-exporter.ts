@@ -52,7 +52,9 @@ function generatePackageJson(pipelineId: string): string {
       'dotenv': '^16.0.0',
       'express': '^4.18.2',
       '@pinecone-database/pinecone': '^4.0.0',
-      'openai': '^4.56.0'
+      'openai': '^4.56.0',
+      'firebase-admin': '^12.5.0',
+      'cors': '^2.8.5'
     },
     engines: {
       node: '>=18.0.0'
@@ -64,8 +66,19 @@ function generatePackageJson(pipelineId: string): string {
  * Generate MCP server.js file
  */
 function generateServerJs(pipeline: PipelineData): string {
-  const defaultIndexName = (pipeline as any).indexName || pipeline.metadata.indexName || pipeline.metadata.vectorStore || 'ctx-shared';
-  const defaultNamespace = (pipeline as any).namespace || pipeline.metadata.namespace || '';
+  const md = (pipeline && (pipeline as any).metadata) ? (pipeline as any).metadata : {} as any;
+  const cfg = (pipeline && (pipeline as any).config) ? (pipeline as any).config : {} as any;
+  const ret = (cfg && cfg.retrieval) ? cfg.retrieval : { topK: 5, searchType: 'similarity' } as any;
+  const defaultIndexName = (pipeline as any).indexName || md.indexName || 'ctx-shared';
+  const defaultNamespace = (pipeline as any).namespace || md.namespace || '';
+  const topK = Number(ret.topK ?? 5) || 5;
+  const fileName = md.fileName || 'document.txt';
+  const purpose = md.purpose || 'Contexto MCP';
+  const vectorStore = md.vectorStore || 'pinecone';
+  const chunksCount = typeof md.chunksCount === 'number' ? md.chunksCount : 0;
+  const chunkSize = typeof md.chunkSize === 'number' ? md.chunkSize : 500;
+  const overlap = typeof md.overlap === 'number' ? md.overlap : 50;
+  const searchType = ret.searchType || 'similarity';
   return `#!/usr/bin/env node
 
 const { Server } = require('@modelcontextprotocol/sdk/server/index.js');
@@ -74,14 +87,35 @@ const { CallToolRequestSchema, ListToolsRequestSchema } = require('@modelcontext
 const express = require('express');
 const { Pinecone } = require('@pinecone-database/pinecone');
 const OpenAI = require('openai');
+const admin = require('firebase-admin');
+const cors = require('cors');
 
 // Load environment variables
 require('dotenv').config();
 
+// Optional Firestore logging via Firebase Admin
+let firestore = null;
+try {
+  if (process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY) {
+    const privateKey = (process.env.FIREBASE_PRIVATE_KEY || '').replace(/\\n/g, '\n');
+    admin.initializeApp({
+      credential: admin.credential.cert({
+        projectId: process.env.FIREBASE_PROJECT_ID,
+        clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+        privateKey
+      })
+    });
+    firestore = admin.firestore();
+    console.error('Firebase Admin initialized for MCP server logging');
+  }
+} catch (e) {
+  console.error('Failed to initialize Firebase Admin (logging disabled):', e && e.message ? e.message : e);
+}
+
 const server = new Server({
   name: 'contexto-pipeline-${pipeline.id}',
   version: '1.0.0',
-  description: 'RAG pipeline for ${pipeline.metadata.purpose}'
+  description: 'RAG pipeline for ${purpose}'
 }, {
   capabilities: {
     tools: {}
@@ -105,7 +139,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             limit: {
               type: 'number',
               description: 'Maximum number of results to return',
-              default: ${pipeline.config.retrieval.topK}
+              default: ${topK}
             }
           },
           required: ['query']
@@ -129,7 +163,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   
   switch (name) {
     case 'search_knowledge':
-      return await searchKnowledge(args.query, args.limit || ${pipeline.config.retrieval.topK});
+      return await searchKnowledge(args.query, args.limit || ${topK});
     
     case 'get_pipeline_info':
       return {
@@ -138,14 +172,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             type: 'text',
             text: JSON.stringify({
               pipelineId: '${pipeline.id}',
-              purpose: '${pipeline.metadata.purpose}',
-              vectorStore: '${pipeline.metadata.vectorStore}',
-              chunksCount: ${pipeline.metadata.chunksCount},
-              chunkSize: ${pipeline.metadata.chunkSize},
-              overlap: ${pipeline.metadata.overlap},
+              purpose: '${purpose}',
+              vectorStore: '${vectorStore}',
+              chunksCount: ${chunksCount},
+              chunkSize: ${chunkSize},
+              overlap: ${overlap},
               retrievalConfig: {
-                topK: ${pipeline.config.retrieval.topK},
-                searchType: '${pipeline.config.retrieval.searchType}'
+                topK: ${topK},
+                searchType: '${searchType}'
               }
             }, null, 2)
           }
@@ -159,15 +193,29 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
 // Start a minimal HTTP server to satisfy Heroku's web dyno requirements
 const app = express();
+app.use(cors());
+app.use(express.json());
 const PORT = process.env.PORT || 3000;
 app.get('/', (_req, res) => res.send('Contexto MCP server is running for pipeline ${pipeline.id}'));
 app.get('/health', (_req, res) => res.send('ok'));
+app.post('/query', async (req, res) => {
+  try {
+    const { query, limit } = req.body || {};
+    if (!query || typeof query !== 'string') {
+      return res.status(400).json({ error: 'Missing query (string)' });
+    }
+    const result = await searchKnowledge(query, limit);
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e && e.message ? e.message : 'Query error' });
+  }
+});
 app.listen(PORT, () => {
   console.error('HTTP server listening on port ' + PORT);
 });
 
 // Search function implementation
-async function searchKnowledge(query, limit = ${pipeline.config.retrieval.topK}) {
+async function searchKnowledge(query, limit = ${topK}) {
   try {
     // Validate env
     const AZKEY = process.env.AZURE_OPENAI_API_KEY;
@@ -214,7 +262,7 @@ async function searchKnowledge(query, limit = ${pipeline.config.retrieval.topK})
     // Query Pinecone (namespace per user)
     const ns = DEFAULT_NAMESPACE || undefined;
     const results = await index.namespace(ns).query({
-      topK: Number(limit) || ${pipeline.config.retrieval.topK},
+      topK: Number(limit) || ${topK},
       vector,
       includeMetadata: true
     });
@@ -230,13 +278,13 @@ async function searchKnowledge(query, limit = ${pipeline.config.retrieval.topK})
     const sources = matches.map((m, i) => ({
       score: m.score,
       text: m?.metadata?.text || '',
-      fileName: m?.metadata?.fileName || '${pipeline.metadata.fileName}',
+      fileName: m?.metadata?.fileName || '${fileName}',
       chunkIndex: m?.metadata?.chunkIndex ?? i
     }));
     const context = sources.map((s, i) => \`[\${i+1}] \${s.text}\`).join('\n\n');
 
     // Optional summarization via Azure OpenAI
-    let answer = \`Top \${Math.min(sources.length, Number(limit) || ${pipeline.config.retrieval.topK})} results for: "\${query}"\n\n\${sources.map((s,i)=>\`[\${i+1}] (\${(s.score||0).toFixed(4)}) \${s.text.substring(0,300)}\${s.text.length>300?'…':''}\`).join('\n\n')}\`;
+    let answer = \`Top \${Math.min(sources.length, Number(limit) || ${topK})} results for: "\${query}"\n\n\${sources.map((s,i)=>\`[\${i+1}] (\${(s.score||0).toFixed(4)}) \${s.text.substring(0,300)}\${s.text.length>300?'…':''}\`).join('\n\n')}\`;
     if (chatEnabled && chatClient) {
       try {
         const completion = await chatClient.chat.completions.create({
@@ -255,12 +303,31 @@ async function searchKnowledge(query, limit = ${pipeline.config.retrieval.topK})
     }
 
     // Return MCP tool response format
-    return {
+    const response = {
       content: [
         { type: 'text', text: answer },
         { type: 'text', text: \`\n\nSources:\n\${sources.map((s,i)=>\`[\${i+1}] \${s.fileName}#\${s.chunkIndex}\`).join('\n')}\` }
       ]
     };
+
+    // Optional Firestore query logging
+    try {
+      if (firestore) {
+        await firestore.collection('mcp_queries').add({
+          pipelineId: '${pipeline.id}',
+          userId: process.env.MCP_USER_ID || null,
+          query,
+          answer: typeof answer === 'string' ? answer.slice(0, 4000) : '',
+          topK: Number(limit) || ${topK},
+          ts: new Date(),
+          sources: sources.slice(0, ${topK})
+        });
+      }
+    } catch (logErr) {
+      console.error('Failed to log MCP query:', logErr && logErr.message ? logErr.message : logErr);
+    }
+
+    return response;
   } catch (error) {
     return {
       content: [
@@ -318,18 +385,29 @@ CF_R2_ENDPOINT=https://your-account-id.r2.cloudflarestorage.com
  * Generate README.md file
  */
 function generateReadme(pipeline: PipelineData): string {
-  return `# MCP Pipeline: ${pipeline.metadata.purpose}
+  const md = (pipeline && (pipeline as any).metadata) ? (pipeline as any).metadata : {} as any;
+  const cfg = (pipeline && (pipeline as any).config) ? (pipeline as any).config : {} as any;
+  const ret = (cfg && cfg.retrieval) ? cfg.retrieval : {} as any;
+  const purpose = md.purpose || 'Contexto MCP';
+  const fileName = md.fileName || 'document.txt';
+  const vectorStore = md.vectorStore || 'pinecone';
+  const chunksCount = typeof md.chunksCount === 'number' ? md.chunksCount : 0;
+  const chunkSize = typeof md.chunkSize === 'number' ? md.chunkSize : 500;
+  const overlap = typeof md.overlap === 'number' ? md.overlap : 50;
+  const topK = Number(ret.topK ?? 5) || 5;
 
-This is an MCP (Model Context Protocol) server generated by Contexto for the pipeline "${pipeline.metadata.purpose}".
+  return `# MCP Pipeline: ${purpose}
+
+This is an MCP (Model Context Protocol) server generated by Contexto for the pipeline "${purpose}".
 
 ## Overview
 
 - **Pipeline ID**: ${pipeline.id}
-- **Source File**: ${pipeline.metadata.fileName}
-- **Vector Store**: ${pipeline.metadata.vectorStore}
-- **Chunks**: ${pipeline.metadata.chunksCount}
-- **Chunk Size**: ${pipeline.metadata.chunkSize} characters
-- **Overlap**: ${pipeline.metadata.overlap} characters
+- **Source File**: ${fileName}
+- **Vector Store**: ${vectorStore}
+- **Chunks**: ${chunksCount}
+- **Chunk Size**: ${chunkSize} characters
+- **Overlap**: ${overlap} characters
 
 ## Installation
 
@@ -355,7 +433,7 @@ Search the knowledge base for relevant information.
 
 **Parameters:**
 - \`query\` (string, required): The search query
-- \`limit\` (number, optional): Maximum number of results (default: ${pipeline.config.retrieval.topK})
+- \`limit\` (number, optional): Maximum number of results (default: ${topK})
 
 ### get_pipeline_info
 Get information about this pipeline configuration.
@@ -376,12 +454,12 @@ This MCP server was automatically generated by [Contexto](https://contexto.dev) 
 }
 
 /**
- * Create a ZIP archive from a directory
+ * Create a TAR.GZ archive from a directory (Heroku builds require tarball)
  */
-async function createZipArchive(sourceDir: string, outputPath: string): Promise<void> {
+async function createTarGzArchive(sourceDir: string, outputPath: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const output = fs.createWriteStream(outputPath);
-    const archive = archiver('zip', { zlib: { level: 9 } });
+    const archive = archiver('tar', { gzip: true, gzipOptions: { level: 9 } });
 
     output.on('close', () => {
       console.log(`Archive created: ${archive.pointer()} total bytes`);
@@ -415,7 +493,13 @@ export async function exportMCPBundle(pipelineId: string, userId: string): Promi
       throw new Error('Pipeline not found');
     }
     
-    const pipelineData = pipelineDoc.data() as PipelineData;
+    const pipelineRaw = pipelineDoc.data() as Partial<PipelineData> | undefined;
+    const pipelineData: PipelineData = {
+      id: pipelineId,
+      userId: (pipelineRaw as any)?.userId || userId,
+      metadata: (pipelineRaw as any)?.metadata || ({} as any),
+      config: (pipelineRaw as any)?.config || ({} as any)
+    } as any;
     
     // Create temporary directory for MCP files
     const tempDir = path.join(os.tmpdir(), `mcp-export-${pipelineId}-${Date.now()}`);
@@ -449,24 +533,23 @@ export async function exportMCPBundle(pipelineId: string, userId: string): Promi
         'web: node server.js\n'
       );
       
-      // Create ZIP archive
-      // Create the ZIP outside of sourceDir to avoid self-inclusion
-      const zipPath = path.join(os.tmpdir(), `mcp-pipeline-${pipelineId}-${Date.now()}.zip`);
-      await createZipArchive(tempDir, zipPath);
+      // Create TAR.GZ archive outside of sourceDir to avoid self-inclusion
+      const tarPath = path.join(os.tmpdir(), `mcp-pipeline-${pipelineId}-${Date.now()}.tar.gz`);
+      await createTarGzArchive(tempDir, tarPath);
       
       // Upload to R2
       const exportId = uuidv4();
-      const r2Key = `users/${userId}/exports/${exportId}/mcp-pipeline.zip`;
-      const uploadUrl = await generateUploadUrl(r2Key, 'application/zip');
+      const r2Key = `users/${userId}/exports/${exportId}/mcp-pipeline.tar.gz`;
+      const uploadUrl = await generateUploadUrl(r2Key, 'application/gzip');
       
-      // Read ZIP file and upload
-      const zipBuffer = await fs.promises.readFile(zipPath);
+      // Read TAR.GZ file and upload
+      const tarBuffer = await fs.promises.readFile(tarPath);
       const uploadResponse = await fetch(uploadUrl, {
         method: 'PUT',
-        body: zipBuffer,
+        body: tarBuffer,
         headers: {
-          'Content-Type': 'application/zip',
-          'Content-Length': zipBuffer.length.toString()
+          'Content-Type': 'application/gzip',
+          'Content-Length': tarBuffer.length.toString()
         }
       });
       
@@ -480,8 +563,8 @@ export async function exportMCPBundle(pipelineId: string, userId: string): Promi
         pipelineId,
         userId,
         r2Key,
-        fileName: 'mcp-pipeline.zip',
-        fileSize: zipBuffer.length,
+        fileName: 'mcp-pipeline.tar.gz',
+        fileSize: tarBuffer.length,
         createdAt: new Date(),
         status: 'completed'
       };

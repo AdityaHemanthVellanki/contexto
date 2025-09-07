@@ -47,6 +47,8 @@ interface MCPItem {
   fileUrl?: string;
   exportUrl?: string;
   deploymentUrl?: string;
+  deploymentStatus?: 'building' | 'deployed' | 'failed';
+  pipelineId?: string;
   tools?: any[];
   context?: string;
 }
@@ -64,6 +66,7 @@ export default function MCPDashboard() {
   const { user, isLoading: authLoading, signInWithGoogle } = useAuth();
   const [mcps, setMcps] = useState<MCPItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [deploying, setDeploying] = useState<Record<string, boolean>>({});
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [currentStep, setCurrentStep] = useState(1);
   const [searchTerm, setSearchTerm] = useState('');
@@ -111,6 +114,36 @@ export default function MCPDashboard() {
     } catch (error) {
       console.error('Error deleting MCP:', error);
       toast.error('Failed to delete MCP');
+    }
+  };
+
+  const handleDeployMCP = async (mcp: MCPItem) => {
+    if (!user) return;
+    if (!mcp.pipelineId) {
+      toast.error('Cannot deploy: pipelineId missing for this MCP');
+      return;
+    }
+    try {
+      setDeploying(prev => ({ ...prev, [mcp.id]: true }));
+      const res = await fetch('/api/deployMCP', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${await user.getIdToken()}`
+        },
+        body: JSON.stringify({ pipelineId: mcp.pipelineId })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data?.error || data?.message || 'Deployment failed');
+      }
+      toast.success('Deployment started. Your MCP will be live shortly.');
+      // Firestore listeners will update the card when deploymentUrl is set by backend
+    } catch (e: any) {
+      console.error('Deploy MCP error:', e);
+      toast.error(e?.message || 'Failed to deploy MCP');
+    } finally {
+      setDeploying(prev => ({ ...prev, [mcp.id]: false }));
     }
   };
 
@@ -702,16 +735,39 @@ export default function MCPDashboard() {
                           Download
                         </Button>
                       )}
-                      
+
+                      {/* Deploy / Open buttons */}
+                      {mcp.status === 'complete' && mcp.pipelineId && !mcp.deploymentUrl && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handleDeployMCP(mcp)}
+                          disabled={!!deploying[mcp.id]}
+                          className="bg-transparent border-gray-600 text-white hover:bg-gray-800"
+                        >
+                          {deploying[mcp.id] ? (
+                            <>
+                              <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+                              Deploying...
+                            </>
+                          ) : (
+                            <>
+                              <Rocket className="h-4 w-4 mr-1" />
+                              Deploy
+                            </>
+                          )}
+                        </Button>
+                      )}
+
                       {mcp.deploymentUrl && (
                         <Button
                           size="sm"
                           variant="outline"
-                          onClick={() => window.open(mcp.deploymentUrl, '_blank')}
+                          onClick={() => window.open(mcp.deploymentUrl!, '_blank')}
                           className="bg-transparent border-gray-600 text-white hover:bg-gray-800"
                         >
                           <ExternalLink className="h-4 w-4 mr-1" />
-                          Deploy
+                          Open
                         </Button>
                       )}
                       

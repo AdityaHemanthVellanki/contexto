@@ -7,7 +7,7 @@ import { z } from 'zod';
 // Request schema validation
 const DeployMCPSchema = z.object({
   pipelineId: z.string().min(1),
-  appName: z.string().optional()
+  appName: z.string().optional() 
 });
 
 interface DeployMCPRequest {
@@ -52,7 +52,7 @@ async function createHerokuApp(appName: string, userId: string): Promise<{
 /**
  * Set Heroku config vars
  */
-async function setHerokuConfigVars(appName: string): Promise<void> {
+async function setHerokuConfigVars(appName: string, extra: Record<string, string> = {}): Promise<void> {
   const HEROKU_API_KEY = process.env.HEROKU_API_KEY;
   if (!HEROKU_API_KEY) {
     throw new Error('HEROKU_API_KEY environment variable is required');
@@ -65,12 +65,20 @@ async function setHerokuConfigVars(appName: string): Promise<void> {
     AZURE_OPENAI_DEPLOYMENT_TURBO: process.env.AZURE_OPENAI_DEPLOYMENT_TURBO || '',
     AZURE_OPENAI_DEPLOYMENT_GPT4: process.env.AZURE_OPENAI_DEPLOYMENT_GPT4 || '',
     AZURE_OPENAI_DEPLOYMENT_OMNI: process.env.AZURE_OPENAI_DEPLOYMENT_OMNI || '',
+    AZURE_OPENAI_API_VERSION: process.env.AZURE_OPENAI_API_VERSION || '2024-02-15-preview',
     PINECONE_API_KEY: process.env.PINECONE_API_KEY || '',
     PINECONE_ENVIRONMENT: process.env.PINECONE_ENVIRONMENT || '',
+    PINECONE_INDEX: process.env.PINECONE_INDEX || process.env.PINECONE_INDEX_NAME || '',
+    PINECONE_INDEX_NAME: process.env.PINECONE_INDEX_NAME || process.env.PINECONE_INDEX || '',
+    PINECONE_NAMESPACE: process.env.PINECONE_NAMESPACE || '',
     CF_ACCOUNT_ID: process.env.CF_ACCOUNT_ID || '',
     CF_R2_ACCESS_KEY_ID: process.env.CF_R2_ACCESS_KEY_ID || '',
     CF_R2_SECRET_ACCESS_KEY: process.env.CF_R2_SECRET_ACCESS_KEY || '',
-    CF_R2_BUCKET_NAME: process.env.CF_R2_BUCKET_NAME || ''
+    CF_R2_BUCKET_NAME: process.env.CF_R2_BUCKET_NAME || '',
+    // Optional Firebase Admin for Firestore query logging from deployed MCP
+    FIREBASE_PROJECT_ID: process.env.FIREBASE_PROJECT_ID || '',
+    FIREBASE_CLIENT_EMAIL: process.env.FIREBASE_CLIENT_EMAIL || '',
+    FIREBASE_PRIVATE_KEY: process.env.FIREBASE_PRIVATE_KEY || ''
   };
 
   const response = await fetch(`https://api.heroku.com/apps/${appName}/config-vars`, {
@@ -80,7 +88,7 @@ async function setHerokuConfigVars(appName: string): Promise<void> {
       'Content-Type': 'application/json',
       'Accept': 'application/vnd.heroku+json; version=3'
     },
-    body: JSON.stringify(configVars)
+    body: JSON.stringify({ ...configVars, ...extra })
   });
 
   if (!response.ok) {
@@ -95,6 +103,7 @@ async function setHerokuConfigVars(appName: string): Promise<void> {
 async function deployToHeroku(appName: string, sourceUrl: string): Promise<{
   id: string;
   status: string;
+  output_stream_url?: string;
 }> {
   const HEROKU_API_KEY = process.env.HEROKU_API_KEY;
   if (!HEROKU_API_KEY) {
@@ -208,7 +217,20 @@ export const POST = withAuth(async (req) => {
     // Initialize Firestore for deployment tracking
     const db = await getFirestore();
 
-    // Step 1: Export MCP bundle
+    // Load pipeline metadata and validate ownership
+    const pipelineDoc = await db.collection('pipelines').doc(pipelineId).get();
+    if (!pipelineDoc.exists) {
+      return errorResponse('Pipeline not found', 404);
+    }
+    const pipelineData = pipelineDoc.data() as any;
+    if (pipelineData.userId !== req.userId) {
+      return errorResponse('Not authorized to deploy this pipeline', 403);
+    }
+    const indexName = pipelineData.indexName || process.env.PINECONE_INDEX || process.env.PINECONE_INDEX_NAME || '';
+    const namespace = pipelineData.namespace || '';
+    const mcpId = pipelineData.mcpId || null;
+
+    // Step 1: Export MCP bundle (tar.gz)
     console.log('Exporting MCP bundle...');
     const exportResult = await exportMCPBundle(pipelineId, req.userId);
     
@@ -216,9 +238,17 @@ export const POST = withAuth(async (req) => {
     console.log('Creating Heroku app...');
     const app = await createHerokuApp(appName, req.userId);
     
-    // Step 3: Set config vars
+    // Step 3: Set config vars (inject pipeline-specific runtime)
     console.log('Setting config vars...');
-    await setHerokuConfigVars(app.name);
+    await setHerokuConfigVars(app.name, {
+      MCP_USER_ID: req.userId,
+      MCP_PIPELINE_ID: pipelineId,
+      MCP_INDEX_NAME: indexName || '',
+      MCP_NAMESPACE: namespace || '',
+      PINECONE_INDEX: indexName || '',
+      PINECONE_INDEX_NAME: indexName || '',
+      PINECONE_NAMESPACE: namespace || ''
+    });
     
     // Step 4: Deploy source
     console.log('Deploying source...');
@@ -234,7 +264,9 @@ export const POST = withAuth(async (req) => {
       status: 'building',
       createdAt: new Date(),
       updatedAt: new Date(),
-      buildId: build.id
+      buildId: build.id,
+      provider: 'heroku',
+      logsUrl: build.output_stream_url || null
     });
     // Remember the doc id to allow terminal updates on errors/timeouts
     deploymentDocId = build.id;
@@ -259,6 +291,33 @@ export const POST = withAuth(async (req) => {
       exportId: exportResult.exportId
     }, { merge: true });
 
+    // Update pipeline document with deployment info
+    await db.collection('pipelines').doc(pipelineId).set({
+      deployment: {
+        provider: 'heroku',
+        appName: app.name,
+        appUrl: app.web_url,
+        buildId: build.id,
+        status: 'deployed',
+        logsUrl: build.output_stream_url || null,
+        updatedAt: new Date()
+      }
+    }, { merge: true });
+
+    // Update MCP document (top-level) if present
+    if (mcpId) {
+      try {
+        await db.collection('mcps').doc(mcpId).set({
+          deploymentUrl: app.web_url,
+          deploymentStatus: 'deployed',
+          deployedAt: new Date(),
+          updatedAt: new Date()
+        }, { merge: true });
+      } catch (e) {
+        console.warn('Failed to update MCP doc with deployment info:', e);
+      }
+    }
+
     return successResponse({
       message: 'MCP pipeline deployed successfully',
       deploymentId: build.id,
@@ -268,7 +327,9 @@ export const POST = withAuth(async (req) => {
         buildId: build.id,
         exportId: exportResult.exportId,
         status: 'deployed',
-        deploymentId: build.id
+        deploymentId: build.id,
+        provider: 'heroku',
+        logsUrl: build.output_stream_url || null
       }
     });
 
