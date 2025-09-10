@@ -187,7 +187,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       };
     
     default:
-      throw new Error(\`Unknown tool: \${name}\`);
+      throw new Error('Unknown tool: ' + name);
   }
 });
 
@@ -208,6 +208,70 @@ app.post('/query', async (req, res) => {
     res.json(result);
   } catch (e) {
     res.status(500).json({ error: e && e.message ? e.message : 'Query error' });
+  }
+});
+// Return tool definitions over HTTP for clients that cannot speak MCP stdio
+app.get('/tools', (_req, res) => {
+  res.json({
+    tools: [
+      {
+        name: 'search_knowledge',
+        description: 'Search the knowledge base for relevant information',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            query: { type: 'string', description: 'The search query' },
+            limit: { type: 'number', description: 'Maximum number of results to return', default: ${topK} }
+          },
+          required: ['query']
+        }
+      },
+      {
+        name: 'get_pipeline_info',
+        description: 'Get information about this pipeline',
+        inputSchema: { type: 'object', properties: {} }
+      }
+    ]
+  });
+});
+// Call tools over HTTP (parity with MCP tool handlers)
+app.post('/call-tool', async (req, res) => {
+  try {
+    const { name, args } = req.body || {};
+    if (!name) return res.status(400).json({ error: 'Missing tool name' });
+    switch (name) {
+      case 'search_knowledge': {
+        const q = args?.query;
+        const l = args?.limit || ${topK};
+        if (!q || typeof q !== 'string') {
+          return res.status(400).json({ error: 'args.query (string) is required' });
+        }
+        const result = await searchKnowledge(q, l);
+        return res.json(result);
+      }
+      case 'get_pipeline_info': {
+        return res.json({
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                pipelineId: '${pipeline.id}',
+                purpose: '${purpose}',
+                vectorStore: '${vectorStore}',
+                chunksCount: ${chunksCount},
+                chunkSize: ${chunkSize},
+                overlap: ${overlap},
+                retrievalConfig: { topK: ${topK}, searchType: '${searchType}' }
+              }, null, 2)
+            }
+          ]
+        });
+      }
+      default:
+        return res.status(400).json({ error: 'Unknown tool: ' + name });
+    }
+  } catch (e) {
+    res.status(500).json({ error: e && e.message ? e.message : 'Tool call error' });
   }
 });
 app.listen(PORT, () => {

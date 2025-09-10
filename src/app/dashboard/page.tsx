@@ -49,6 +49,8 @@ interface MCPItem {
   deploymentUrl?: string;
   deploymentStatus?: 'building' | 'deployed' | 'failed';
   pipelineId?: string;
+  extensionUrl?: string;
+  logsUrl?: string;
   tools?: any[];
   context?: string;
 }
@@ -67,6 +69,7 @@ export default function MCPDashboard() {
   const [mcps, setMcps] = useState<MCPItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [deploying, setDeploying] = useState<Record<string, boolean>>({});
+  const [downloadingExt, setDownloadingExt] = useState<Record<string, boolean>>({});
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [currentStep, setCurrentStep] = useState(1);
   const [searchTerm, setSearchTerm] = useState('');
@@ -114,6 +117,35 @@ export default function MCPDashboard() {
     } catch (error) {
       console.error('Error deleting MCP:', error);
       toast.error('Failed to delete MCP');
+    }
+  };
+
+  const handleDownloadExtension = async (mcp: MCPItem) => {
+    if (!user) return;
+    if (!mcp.pipelineId) {
+      toast.error('Cannot download extension: pipelineId missing for this MCP');
+      return;
+    }
+    try {
+      setDownloadingExt(prev => ({ ...prev, [mcp.id]: true }));
+      const res = await fetch(`/api/extensions/${encodeURIComponent(mcp.pipelineId)}`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${await user.getIdToken()}`
+        }
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data?.error || data?.message || 'Failed to get download link');
+      }
+      const url = data?.url;
+      if (!url) throw new Error('Download URL not returned');
+      window.open(url, '_blank');
+    } catch (e: any) {
+      console.error('Download VSIX error:', e);
+      toast.error(e?.message || 'Failed to download VS Code extension');
+    } finally {
+      setDownloadingExt(prev => ({ ...prev, [mcp.id]: false }));
     }
   };
 
@@ -768,6 +800,40 @@ export default function MCPDashboard() {
                         >
                           <ExternalLink className="h-4 w-4 mr-1" />
                           Open
+                        </Button>
+                      )}
+
+                      {mcp.pipelineId && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handleDownloadExtension(mcp)}
+                          disabled={!!downloadingExt[mcp.id]}
+                          className="bg-transparent border-gray-600 text-white hover:bg-gray-800"
+                        >
+                          {downloadingExt[mcp.id] ? (
+                            <>
+                              <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+                              Preparing VSIX...
+                            </>
+                          ) : (
+                            <>
+                              <Download className="h-4 w-4 mr-1" />
+                              VS Code Extension
+                            </>
+                          )}
+                        </Button>
+                      )}
+
+                      {mcp.logsUrl && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => window.open(mcp.logsUrl!, '_blank')}
+                          className="bg-transparent border-gray-600 text-white hover:bg-gray-800"
+                        >
+                          <ExternalLink className="h-4 w-4 mr-1" />
+                          View logs
                         </Button>
                       )}
                       

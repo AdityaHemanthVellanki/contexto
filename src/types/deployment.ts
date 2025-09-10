@@ -35,9 +35,12 @@ export interface DeploymentData {
   createdAt: string;
   updatedAt: string;
   logs?: string[];
+  logsUrl?: string;
   url?: string;
   webUrl?: string;
   appName?: string;
   buildId?: string;
   error?: string;
+  extensionUrl?: string;
+  extensionR2Key?: string;
 }

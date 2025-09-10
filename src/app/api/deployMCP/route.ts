@@ -3,6 +3,7 @@ import { withAuth, errorResponse, successResponse } from '@/lib/api-middleware';
 import { exportMCPBundle } from '@/lib/mcp-exporter';
 import { getFirestore } from '@/lib/firebase-admin';
 import { z } from 'zod';
+import { buildAndUploadVSIX } from '@/lib/vscode-extension-builder';
 
 // Request schema validation
 const DeployMCPSchema = z.object({
@@ -226,6 +227,9 @@ export const POST = withAuth(async (req) => {
     if (pipelineData.userId !== req.userId) {
       return errorResponse('Not authorized to deploy this pipeline', 403);
     }
+
+    // Use the MCP bundle as a pipeline ingester
+
     const indexName = pipelineData.indexName || process.env.PINECONE_INDEX || process.env.PINECONE_INDEX_NAME || '';
     const namespace = pipelineData.namespace || '';
     const mcpId = pipelineData.mcpId || null;
@@ -304,12 +308,31 @@ export const POST = withAuth(async (req) => {
       }
     }, { merge: true });
 
+    // Build user-specific VS Code extension (VSIX) and upload to R2
+    let extensionUrl: string | null = null;
+    let extensionR2Key: string | null = null;
+    try {
+      const vsix = await buildAndUploadVSIX({
+        userId: req.userId,
+        pipelineId,
+        endpoint: app.web_url.replace(/\/$/, ''),
+        appName: app.name
+      });
+      extensionUrl = vsix.downloadUrl;
+      extensionR2Key = vsix.r2Key;
+    } catch (e) {
+      console.warn('Failed to build/upload VSIX:', e);
+    }
+
     // Update MCP document (top-level) if present
     if (mcpId) {
       try {
         await db.collection('mcps').doc(mcpId).set({
           deploymentUrl: app.web_url,
           deploymentStatus: 'deployed',
+          extensionUrl: extensionUrl || null,
+          extensionR2Key: extensionR2Key || null,
+          logsUrl: build.output_stream_url || null,
           deployedAt: new Date(),
           updatedAt: new Date()
         }, { merge: true });
@@ -317,6 +340,14 @@ export const POST = withAuth(async (req) => {
         console.warn('Failed to update MCP doc with deployment info:', e);
       }
     }
+
+    // Also store extension R2 key in pipeline doc for stable download endpoint
+    await db.collection('pipelines').doc(pipelineId).set({
+      deployment: {
+        extensionR2Key: extensionR2Key || null,
+        extensionUrl: extensionUrl || null
+      }
+    }, { merge: true });
 
     return successResponse({
       message: 'MCP pipeline deployed successfully',
@@ -329,7 +360,9 @@ export const POST = withAuth(async (req) => {
         status: 'deployed',
         deploymentId: build.id,
         provider: 'heroku',
-        logsUrl: build.output_stream_url || null
+        logsUrl: build.output_stream_url || null,
+        extensionUrl,
+        extensionR2Key
       }
     });
 
