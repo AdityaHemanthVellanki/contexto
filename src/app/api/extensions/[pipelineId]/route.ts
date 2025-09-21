@@ -35,11 +35,29 @@ export const GET = withAuth(async (
       }
 
       try {
+        // Prefer MCP title if available
+        let displayName: string | undefined;
+        try {
+          const mcpId: string | undefined = data?.mcpId;
+          if (mcpId) {
+            const mcpDoc = await db.collection('mcps').doc(mcpId).get();
+            const mcpTitle = (mcpDoc.exists ? (mcpDoc.data() as any)?.title : null) as string | null;
+            if (mcpTitle && mcpTitle.trim()) displayName = mcpTitle.trim();
+          }
+        } catch (_) {
+          // ignore, will fallback below
+        }
+        if (!displayName) {
+          displayName = (data?.name && String(data.name).trim())
+            || (data?.deployment?.appName && String(data.deployment.appName).trim())
+            || `MCP ${pipelineId.slice(0, 8)}`;
+        }
         const vsix = await buildAndUploadVSIX({
           userId: req.userId,
           pipelineId,
           endpoint: endpoint.replace(/\/$/, ''),
-          appName: data?.deployment?.appName || 'contexto-mcp'
+          appName: data?.deployment?.appName || 'contexto-mcp',
+          displayName
         });
         r2Key = vsix.r2Key;
         // Persist to pipeline doc for future requests

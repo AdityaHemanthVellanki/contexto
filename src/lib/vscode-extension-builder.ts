@@ -9,6 +9,7 @@ export interface BuildVSIXOptions {
   pipelineId: string;
   endpoint: string;
   appName?: string;
+  displayName?: string;
 }
 
 function shortId(id: string): string {
@@ -16,10 +17,12 @@ function shortId(id: string): string {
 }
 
 async function loadTemplateVsix(): Promise<JSZip> {
-  const vsixPath = path.join(process.cwd(), 'vscode-extension-template', 'test.vsix');
+  const templateDir = path.join(process.cwd(), 'vscode-extension-template');
+  const entries = await fs.promises.readdir(templateDir);
+  const vsixName = entries.find((f) => f.toLowerCase().endsWith('.vsix')) || 'test.vsix';
+  const vsixPath = path.join(templateDir, vsixName);
   const buf = await fs.promises.readFile(vsixPath);
-  const zip = await JSZip.loadAsync(buf);
-  return zip;
+  return JSZip.loadAsync(buf);
 }
 
 function findFirstKeyEnding(zip: JSZip, suffix: string): string | null {
@@ -49,6 +52,16 @@ function compileExtensionTs(): string | null {
   }
 }
 
+function sanitizePackageName(name: string): string {
+  let out = name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+  out = out.replace(/^-+|-+$/g, ''); // trim hyphens
+  if (!/^[a-z]/.test(out)) out = `ctx-${out}`;
+  if (!out) out = 'contexto-mcp';
+  // keep it reasonably short
+  if (out.length > 40) out = out.slice(0, 40).replace(/-+$/g, '');
+  return out;
+}
+
 export async function buildAndUploadVSIX(opts: BuildVSIXOptions): Promise<{ r2Key: string; downloadUrl: string }>{
   const zip = await loadTemplateVsix();
 
@@ -62,10 +75,11 @@ export async function buildAndUploadVSIX(opts: BuildVSIXOptions): Promise<{ r2Ke
   const pkg = JSON.parse(pkgRaw);
 
   const sid = shortId(opts.pipelineId);
-  const displayName = `Contexto MCP (${opts.appName || sid})`;
+  const displayName = (opts.displayName && opts.displayName.trim()) || opts.appName || `MCP ${sid}`;
+  const basePkgName = sanitizePackageName(displayName);
 
   // Update package.json
-  pkg.name = `contexto-mcp-${sid}`;
+  pkg.name = `${basePkgName}-${sid}`;
   pkg.displayName = displayName;
   pkg.description = `VS Code client for your Contexto MCP server at ${opts.endpoint}`;
   pkg.main = './out/extension.js';

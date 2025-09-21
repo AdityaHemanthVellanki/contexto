@@ -312,11 +312,26 @@ export const POST = withAuth(async (req) => {
     let extensionUrl: string | null = null;
     let extensionR2Key: string | null = null;
     try {
+      // Determine a friendly display name for the extension
+      let extDisplayName: string = pipelineData?.name || app.name;
+      if (mcpId) {
+        try {
+          const mcpDoc = await db.collection('mcps').doc(mcpId).get();
+          const mcpTitle = (mcpDoc.exists ? (mcpDoc.data() as any)?.title : null) as string | null;
+          if (mcpTitle && mcpTitle.trim()) {
+            extDisplayName = mcpTitle.trim();
+          }
+        } catch (e) {
+          // non-fatal
+          console.warn('Could not load MCP title; using pipeline/app name as displayName');
+        }
+      }
       const vsix = await buildAndUploadVSIX({
         userId: req.userId,
         pipelineId,
         endpoint: app.web_url.replace(/\/$/, ''),
-        appName: app.name
+        appName: app.name,
+        displayName: extDisplayName
       });
       extensionUrl = vsix.downloadUrl;
       extensionR2Key = vsix.r2Key;
