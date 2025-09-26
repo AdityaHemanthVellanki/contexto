@@ -102,7 +102,7 @@ Generate a production-ready pipeline that matches the user's requirements exactl
     });
 
     const content = response.choices[0]?.message?.content;
-    
+  
     if (!content) {
       return NextResponse.json(
         { error: 'No content returned from Azure OpenAI' },
@@ -159,6 +159,8 @@ Generate a production-ready pipeline that matches the user's requirements exactl
         estimatedComplexity: pipelineConfig.metadata?.estimatedComplexity || 'medium',
         suggestedResources: pipelineConfig.metadata?.suggestedResources || []
       };
+
+      // Check the next response and make sure that the pipeline configs are always set to full
 
       // Create the final response
       const pipelineResponse = {

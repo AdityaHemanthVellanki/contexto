@@ -70,12 +70,11 @@ export async function PATCH(request: Request, { params }: any) {
     if (!chatDoc.exists) {
       return NextResponse.json({ message: 'Chat not found' }, { status: 404 });
     }
-
+  
     await chatRef.update({
       title: title.trim(),
       updatedAt: FieldValue.serverTimestamp()
     });
-
     const response = NextResponse.json({ 
       message: 'Chat updated successfully',
       chatId,
@@ -88,6 +87,7 @@ export async function PATCH(request: Request, { params }: any) {
         response.headers.set(key, value as string);
       });
     }
+
 
     return response;
   } catch (error) {
