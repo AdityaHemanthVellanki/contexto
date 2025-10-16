@@ -160,8 +160,7 @@ Generate a production-ready pipeline that matches the user's requirements exactl
         suggestedResources: pipelineConfig.metadata?.suggestedResources || []
       };
 
-      // Check the next response and make sure that the pipeline configs are always set to full
-
+    
       // Create the final response
       const pipelineResponse = {
         pipelineJson: {
@@ -184,7 +183,7 @@ Generate a production-ready pipeline that matches the user's requirements exactl
       } catch (logError) {
         console.warn('Failed to log pipeline generation usage:', logError);
       }
-
+      
       return NextResponse.json(validatedResponse);
 
     } catch (validationError) {

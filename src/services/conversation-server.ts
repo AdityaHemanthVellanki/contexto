@@ -67,6 +67,7 @@ const CONVERSATION_STEPS: Record<ConversationStep, ConversationStepConfig> = {
     },
     nextStep: 'indexing'
   },
+  
   indexing: {
     step: 'indexing',
     question: "Where would you like to store your vector index? (Firestore, Pinecone, Weaviate, or Local)",
